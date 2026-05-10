@@ -29,6 +29,7 @@ Default paths assume this sibling directory layout:
 hexagon-experiment/
   QAIC/
   Hexagon_open_access.Core.19.0.02.Linux-ARM64/
+  Hexagon_SDK/6.5.0.0/
   cdsp_peak/
 ```
 
@@ -40,6 +41,9 @@ Required host pieces:
 - QAIC built from the open-source Qualcomm QAIC repository.
 - LLVM/clang for the AArch64 host build.
 - Hexagon Open Access tools for `hexagon-clang` and Hexagon target headers.
+- Hexagon SDK headers for the DSP power vote interface. The build uses the SDK
+  only as an include source for `HAP_power.h`; the DSP compiler still comes
+  from the Open Access toolchain.
 - `libbsd` for the generated QAIC host stub link.
 
 The Makefile variables can be overridden if your tree differs:
@@ -48,6 +52,7 @@ The Makefile variables can be overridden if your tree differs:
 make -C cdsp_peak \
   QAIC=/path/to/qaic \
   HEXAGON_TOOLS_ROOT=/path/to/Hexagon_open_access.Core.19.0.02.Linux-ARM64 \
+  HEXAGON_SDK_ROOT=/path/to/Hexagon_SDK/6.5.0.0 \
   FASTRPC_INC=/path/to/fastrpc/include
 ```
 
@@ -82,6 +87,7 @@ Useful options:
 ./cdsp_peak/build/host/cdsp_peak --scenario mem-copy --size-mib 128
 ./cdsp_peak/build/host/cdsp_peak --scenario hmx-resource,hmx-cached,hmx-lock --iterations 1
 CDSP_PEAK_ENABLE_HMX_TILE=1 timeout 10s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-cm-ub --iterations 1
+./cdsp_peak/build/host/cdsp_peak --scenario all --power none
 ./cdsp_peak/build/host/cdsp_peak --reset
 ```
 
@@ -104,6 +110,12 @@ domain recovers or is reset externally.
 The banner prints FastRPC-reported capability fields such as VTCM page/count and
 HMX depth/spatial support. These are advisory capability values, not proof that
 every HMX tile instruction sequence is usable.
+
+The default power mode is `--power max`, matching the llama.cpp Hexagon path:
+the DSP code votes for compute client class, DCVS performance mode with max
+core and bus corners, sleep disable, HVX power-up, and HMX power-up. Use
+`--power none` for baseline runs without these HAP power votes. The banner
+prints `power=` and `power_mask=` so results record which votes were applied.
 
 ## HMX Status
 

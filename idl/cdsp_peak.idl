@@ -9,6 +9,11 @@ interface cdsp_peak : remote_handle64 {
                  rout unsigned long long timer_overhead,
                  rout unsigned long long current_cycles);
 
+   long set_power(in long mode,
+                  rout long applied_mask,
+                  rout long failed_step,
+                  rout long failed_error);
+
    long bench_compute(in long kernel, in long iterations,
                       rout unsigned long long cycles,
                       rout unsigned long long checksum);

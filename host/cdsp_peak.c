@@ -32,6 +32,15 @@
 #define HMX_TILE_U8_BYTES 1024
 #define HMX_OUTPUT_BYTES 2048
 
+#define POWER_NONE 0
+#define POWER_MAX 1
+
+#define POWER_STEP_APPTYPE 1
+#define POWER_STEP_DCVS_MAX 2
+#define POWER_STEP_HVX 3
+#define POWER_STEP_HMX 4
+#define POWER_STEP_HMX_V2 5
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define ITERATION_GROUP_NONE 0
 #define ITERATION_GROUP_INT8 1
@@ -46,6 +55,7 @@ struct options {
    int min_ms;
    int iterations;
    int threads;
+   int power_mode;
    size_t size_mib;
    const char *scenario_filter;
 };
@@ -165,6 +175,36 @@ static const char *domain_name(int domain)
    }
 }
 
+static const char *power_mode_name(int mode)
+{
+   switch (mode) {
+   case POWER_NONE:
+      return "none";
+   case POWER_MAX:
+      return "max";
+   default:
+      return "unknown";
+   }
+}
+
+static const char *power_step_name(int step)
+{
+   switch (step) {
+   case POWER_STEP_APPTYPE:
+      return "apptype";
+   case POWER_STEP_DCVS_MAX:
+      return "dcvs-max";
+   case POWER_STEP_HVX:
+      return "hvx";
+   case POWER_STEP_HMX:
+      return "hmx";
+   case POWER_STEP_HMX_V2:
+      return "hmx-v2";
+   default:
+      return "unknown";
+   }
+}
+
 static int make_uri(int domain, char **uri)
 {
    const char *base = getenv("CDSP_PEAK_URI");
@@ -225,17 +265,54 @@ static int query_dsp_capability(int domain, int attribute, uint32_t *capability)
    return err;
 }
 
+static int apply_power_config(const remote_handle64 *handles, int nthreads,
+                              int mode, int *applied_mask_out)
+{
+   int applied_union = 0;
+
+   *applied_mask_out = 0;
+   if (mode == POWER_NONE)
+      return 0;
+
+   for (int i = 0; i < nthreads; ++i) {
+      int applied_mask = 0;
+      int failed_step = 0;
+      int failed_error = 0;
+      int err = cdsp_peak_set_power(handles[i], mode, &applied_mask,
+                                    &failed_step, &failed_error);
+      if (err) {
+         fprintf(stderr, "cdsp_peak_set_power thread %d failed: 0x%x\n", i,
+                 err);
+         return err;
+      }
+      applied_union |= applied_mask;
+      if (failed_step) {
+         fprintf(stderr,
+                 "cdsp_peak_set_power thread %d failed at %s: 0x%x"
+                 " (applied=0x%x)\n",
+                 i, power_step_name(failed_step), (unsigned)failed_error,
+                 applied_mask);
+         return failed_error ? failed_error : AEE_EFAILED;
+      }
+   }
+
+   *applied_mask_out = applied_union;
+   return 0;
+}
+
 static void usage(const char *prog)
 {
    printf("Usage: %s [--scenario all|name[,name...]] [--size-mib N] [--min-ms N]\n"
           "          [--iterations N] [--threads N]\n"
-          "          [--domain N] [--unsigned-pd 0|1] [--reset]\n\n"
+          "          [--domain N] [--unsigned-pd 0|1] [--power none|max]\n"
+          "          [--reset]\n\n"
           "Scenarios: rpc-null, fp32-vmuladd, fp16-vmpyacc,\n"
           "           qf16-vmpyadd, qf32-vmpyadd,\n"
           "           int8-vrmpyacc, int8-vrmpy-add,\n"
           "           mem-read, mem-write, mem-copy, all\n"
           "Experimental explicit-only HMX: hmx-resource, hmx-cached,\n"
-          "           hmx-lock, hmx-int8-ub, hmx-int8-cm-ub, hmx-int8-uh\n",
+          "           hmx-lock, hmx-int8-ub, hmx-int8-cm-ub, hmx-int8-uh\n"
+          "Default power mode is max: compute client, DCVS max, HVX on, HMX on.\n",
           prog);
 }
 
@@ -249,6 +326,17 @@ static int parse_int_arg(const char *value, const char *name)
       exit(2);
    }
    return (int)parsed;
+}
+
+static int parse_power_arg(const char *value)
+{
+   if (!strcmp(value, "none") || !strcmp(value, "off") || !strcmp(value, "0"))
+      return POWER_NONE;
+   if (!strcmp(value, "max") || !strcmp(value, "on") || !strcmp(value, "1"))
+      return POWER_MAX;
+
+   fprintf(stderr, "invalid --power: %s\n", value);
+   exit(2);
 }
 
 static size_t parse_size_arg(const char *value, const char *name)
@@ -271,6 +359,7 @@ static void parse_options(int argc, char **argv, struct options *opt)
    opt->min_ms = 300;
    opt->iterations = 0;
    opt->threads = 1;
+   opt->power_mode = POWER_MAX;
    opt->size_mib = 64;
    opt->scenario_filter = "all";
 
@@ -289,6 +378,8 @@ static void parse_options(int argc, char **argv, struct options *opt)
          opt->domain = parse_int_arg(argv[++i], "--domain");
       } else if (!strcmp(argv[i], "--unsigned-pd") && i + 1 < argc) {
          opt->unsigned_pd = parse_int_arg(argv[++i], "--unsigned-pd");
+      } else if (!strcmp(argv[i], "--power") && i + 1 < argc) {
+         opt->power_mode = parse_power_arg(argv[++i]);
       } else if (!strcmp(argv[i], "--reset")) {
          opt->reset = 1;
       } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
@@ -893,6 +984,7 @@ int main(int argc, char **argv)
    uint32_t vtcm_count = 0;
    uint32_t hmx_depth = 0;
    uint32_t hmx_spatial = 0;
+   int power_applied_mask = 0;
    uint8_t **srcs = NULL;
    uint8_t **dsts = NULL;
    uint8_t *hmx_activation = NULL;
@@ -943,6 +1035,11 @@ int main(int argc, char **argv)
       }
    }
 
+   err = apply_power_config(handles, opt.threads, opt.power_mode,
+                            &power_applied_mask);
+   if (err)
+      goto out;
+
    err = cdsp_peak_get_info(handles[0], &arch, &hvx_bytes, &timer_overhead,
                             &current_cycles);
    if (err) {
@@ -957,10 +1054,12 @@ int main(int argc, char **argv)
 
    printf("cdsp_peak domain=%s arch=v%d hvx=%dB timer_overhead=%" PRIu64
           " cycles threads=%d buffer=%zu MiB/thread vtcm_page=%u"
-          " vtcm_count=%u hmx_depth=%u hmx_spatial=%u\n",
+          " vtcm_count=%u hmx_depth=%u hmx_spatial=%u power=%s"
+          " power_mask=0x%x\n",
           domain_name(opt.domain), arch, hvx_bytes, timer_overhead,
           opt.threads, bytes / (1024u * 1024u), vtcm_page, vtcm_count,
-          hmx_depth, hmx_spatial);
+          hmx_depth, hmx_spatial, power_mode_name(opt.power_mode),
+          power_applied_mask);
 
    if (need_mem) {
       srcs = (uint8_t **)calloc((size_t)opt.threads, sizeof(*srcs));

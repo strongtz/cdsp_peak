@@ -26,7 +26,7 @@
    (CDSP_PEAK_HMX_ERR_BASE + ((step) << 8) + ((err) & 0xff))
 
 typedef struct __attribute__((aligned(8))) {
-   uint8_t opaque[128];
+   unsigned long long attributes[20];
 } compute_res_attr_t;
 
 extern int compute_resource_query_VTCM(unsigned int request,

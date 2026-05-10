@@ -2,10 +2,12 @@ QAIC ?= ../QAIC/src/build/qaic/qaic
 CLANG ?= clang
 HEXAGON_TOOLS_ROOT ?= ../Hexagon_open_access.Core.19.0.02.Linux-ARM64
 HEXAGON_CC ?= $(HEXAGON_TOOLS_ROOT)/Tools/bin/hexagon-clang
+HEXAGON_SDK_ROOT ?= ../Hexagon_SDK/6.5.0.0
 
 FASTRPC_INC ?= /usr/include/fastrpc
 QAIC_INC ?= ../QAIC/inc
 HEXAGON_INC ?= $(HEXAGON_TOOLS_ROOT)/Tools/target/hexagon/include
+HEXAGON_SDK_INC ?= $(HEXAGON_SDK_ROOT)/incs
 
 GEN_DIR := build/gen
 HOST_DIR := build/host
@@ -30,6 +32,10 @@ HOST_LDFLAGS := --target=aarch64-linux-gnu -pthread
 DSP_CFLAGS := -O3 -G0 -fPIC -Wall -Werror -mv68 -mcpu=hexagonv68 \
 	-mhvx=v68 -mhvx-ieee-fp \
 	-I$(GEN_DIR) -I$(FASTRPC_INC) -I$(QAIC_INC) -I$(HEXAGON_INC)
+DSP_POWER_CFLAGS := -O3 -G0 -fPIC -Wall -Werror -mv68 -mcpu=hexagonv68 \
+	-mhvx=v68 -mhvx-ieee-fp \
+	-I$(GEN_DIR) -I$(HEXAGON_SDK_INC) -I$(HEXAGON_SDK_INC)/stddef \
+	-I$(FASTRPC_INC) -I$(QAIC_INC) -I$(HEXAGON_INC)
 DSP_HMX_CFLAGS := $(DSP_CFLAGS) -mhmx
 DSP_LDFLAGS := -shared -G0 -mv68 -mcpu=hexagonv68 -mhvx=v68 -mhvx-ieee-fp \
 	-Wl,-Bsymbolic \
@@ -70,10 +76,13 @@ $(DSP_DIR)/cdsp_peak_skel.o: $(GEN_STAMP) $(GEN_DIR)/cdsp_peak_skel.c | $(DSP_DI
 $(DSP_DIR)/cdsp_peak_imp.o: dsp/cdsp_peak_imp.c $(GEN_STAMP) | $(DSP_DIR)
 	$(HEXAGON_CC) $(DSP_CFLAGS) -c dsp/cdsp_peak_imp.c -o $@
 
+$(DSP_DIR)/cdsp_peak_power.o: dsp/cdsp_peak_power.c $(GEN_STAMP) | $(DSP_DIR)
+	$(HEXAGON_CC) $(DSP_POWER_CFLAGS) -c dsp/cdsp_peak_power.c -o $@
+
 $(DSP_DIR)/cdsp_peak_hmx.o: dsp/cdsp_peak_hmx.c $(GEN_STAMP) | $(DSP_DIR)
 	$(HEXAGON_CC) $(DSP_HMX_CFLAGS) -c dsp/cdsp_peak_hmx.c -o $@
 
-$(DSP_SKEL_SO): $(DSP_DIR)/cdsp_peak_skel.o $(DSP_DIR)/cdsp_peak_imp.o $(DSP_DIR)/cdsp_peak_hmx.o
+$(DSP_SKEL_SO): $(DSP_DIR)/cdsp_peak_skel.o $(DSP_DIR)/cdsp_peak_imp.o $(DSP_DIR)/cdsp_peak_power.o $(DSP_DIR)/cdsp_peak_hmx.o
 	$(HEXAGON_CC) $(DSP_LDFLAGS) -o $@ $^
 
 run: all
