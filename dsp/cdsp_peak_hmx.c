@@ -150,7 +150,8 @@ static int hmx_resource_acquire(struct hmx_resource *res,
                                 int use_cached, int use_lock)
 {
    compute_res_attr_t attr;
-   unsigned int vtcm_size = 8u * 1024u * 1024u;
+   unsigned int vtcm_available = 0;
+   unsigned int vtcm_size = (required_bytes + 4095u) & ~4095u;
    void *vtcm_ptr = NULL;
    int err;
 
@@ -158,10 +159,10 @@ static int hmx_resource_acquire(struct hmx_resource *res,
    if (!has_compute_resource_api())
       return AEE_EUNSUPPORTED;
 
-   if (compute_resource_query_VTCM)
-      (void)compute_resource_query_VTCM(0, &vtcm_size, NULL, NULL, NULL);
-   if (vtcm_size < required_bytes)
-      vtcm_size = required_bytes;
+   if (compute_resource_query_VTCM &&
+       !compute_resource_query_VTCM(0, &vtcm_available, NULL, NULL, NULL) &&
+       vtcm_available < required_bytes)
+      return CDSP_PEAK_HMX_ERR(0, AEE_ENOMEMORY);
 
    memset(&attr, 0, sizeof(attr));
    err = compute_resource_attr_init(&attr);
