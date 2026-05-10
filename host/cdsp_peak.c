@@ -1,0 +1,1099 @@
+// SPDX-License-Identifier: BSD-3-Clause-Clear
+
+#include <errno.h>
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "AEEStdErr.h"
+#include "cdsp_peak.h"
+#include "remote.h"
+#include "rpcmem.h"
+
+#define KERNEL_FP32 0
+#define KERNEL_FP16 1
+#define KERNEL_INT8_FIXED 2
+#define KERNEL_INT8_ADD_FIXED 3
+#define KERNEL_QF16 4
+#define KERNEL_QF32 5
+
+#define HMX_INT8_UB 0
+#define HMX_INT8_CM_UB 1
+#define HMX_INT8_UH 2
+#define HMX_PROBE_RESOURCE 100
+#define HMX_PROBE_CACHED 101
+#define HMX_PROBE_LOCK 102
+#define HMX_TILE_U8_BYTES 1024
+#define HMX_OUTPUT_BYTES 2048
+
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define ITERATION_GROUP_NONE 0
+#define ITERATION_GROUP_INT8 1
+#define MAX_COMPUTE_ITERATIONS 0x30000000
+#define MAX_HMX_REPEATS 0x100000
+#define MAX_THREADS 256
+
+struct options {
+   int domain;
+   int unsigned_pd;
+   int reset;
+   int min_ms;
+   int iterations;
+   int threads;
+   size_t size_mib;
+   const char *scenario_filter;
+};
+
+struct compute_scenario {
+   const char *name;
+   const char *unit;
+   int kernel;
+   double ops_per_iter;
+   int start_iterations;
+   int iteration_group;
+};
+
+struct bench_result {
+   uint64_t count;
+   uint64_t cycles;
+   uint64_t checksum;
+   double elapsed_ms;
+};
+
+struct mem_scenario {
+   const char *name;
+   int kind;
+   double bytes_scale;
+};
+
+struct hmx_scenario {
+   const char *name;
+   int mode;
+   const char *unit;
+   double ops_per_repeat;
+   int start_repeats;
+   size_t output_bytes;
+};
+
+static const struct compute_scenario compute_scenarios[] = {
+   {"fp32-vmuladd", "GFLOPS", KERNEL_FP32, 8.0 * 32.0 * 2.0, 10000,
+    ITERATION_GROUP_NONE},
+   {"fp16-vmpyacc", "GFLOPS", KERNEL_FP16, 8.0 * 64.0 * 2.0, 10000,
+    ITERATION_GROUP_NONE},
+   {"qf16-vmpyadd", "GFLOPS", KERNEL_QF16, 8.0 * 64.0 * 2.0, 10000,
+    ITERATION_GROUP_NONE},
+   {"qf32-vmpyadd", "GFLOPS", KERNEL_QF32, 8.0 * 32.0 * 2.0, 10000,
+    ITERATION_GROUP_NONE},
+   {"int8-vrmpyacc", "GIOPS", KERNEL_INT8_FIXED, 8.0 * 32.0 * 4.0 * 2.0,
+    10000, ITERATION_GROUP_INT8},
+   {"int8-vrmpy-add", "GIOPS", KERNEL_INT8_ADD_FIXED,
+    8.0 * 32.0 * 4.0 * 2.0, 10000, ITERATION_GROUP_INT8},
+};
+
+static const struct mem_scenario mem_scenarios[] = {
+   {"mem-read", 0, 1.0},
+   {"mem-write", 1, 1.0},
+   {"mem-copy", 2, 2.0},
+};
+
+static const struct hmx_scenario hmx_scenarios[] = {
+   {"hmx-resource", HMX_PROBE_RESOURCE, "probe", 0.0, 1, 16},
+   {"hmx-cached", HMX_PROBE_CACHED, "probe", 0.0, 1, 16},
+   {"hmx-lock", HMX_PROBE_LOCK, "probe", 0.0, 1, 16},
+   {"hmx-int8-ub", HMX_INT8_UB, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES},
+   {"hmx-int8-cm-ub", HMX_INT8_CM_UB, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0,
+    1, HMX_TILE_U8_BYTES},
+   {"hmx-int8-uh", HMX_INT8_UH, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0, 1,
+    HMX_OUTPUT_BYTES},
+};
+
+static double now_ms(void)
+{
+   struct timespec ts;
+
+   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+   return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
+
+static uint64_t mix_checksum(uint64_t acc, uint64_t value, uint64_t index)
+{
+   acc ^= value + 0x9e3779b97f4a7c15ULL + (index << 6) + (index >> 2);
+   acc *= 0x100000001b3ULL;
+   return acc;
+}
+
+static const char *domain_suffix(int domain)
+{
+   switch (domain) {
+   case ADSP_DOMAIN_ID:
+      return ADSP_DOMAIN;
+   case MDSP_DOMAIN_ID:
+      return MDSP_DOMAIN;
+   case SDSP_DOMAIN_ID:
+      return SDSP_DOMAIN;
+   case CDSP_DOMAIN_ID:
+      return CDSP_DOMAIN;
+   case CDSP1_DOMAIN_ID:
+      return CDSP1_DOMAIN;
+   default:
+      return CDSP_DOMAIN;
+   }
+}
+
+static const char *domain_name(int domain)
+{
+   switch (domain) {
+   case ADSP_DOMAIN_ID:
+      return "adsp";
+   case MDSP_DOMAIN_ID:
+      return "mdsp";
+   case SDSP_DOMAIN_ID:
+      return "sdsp";
+   case CDSP_DOMAIN_ID:
+      return "cdsp";
+   case CDSP1_DOMAIN_ID:
+      return "cdsp1";
+   default:
+      return "unknown";
+   }
+}
+
+static int make_uri(int domain, char **uri)
+{
+   const char *base = getenv("CDSP_PEAK_URI");
+   const char *suffix = domain_suffix(domain);
+   size_t len;
+
+   if (!base)
+      base = cdsp_peak_URI;
+
+   len = strlen(base) + strlen(suffix) + 1;
+   *uri = (char *)malloc(len);
+   if (!*uri)
+      return -ENOMEM;
+
+   snprintf(*uri, len, "%s%s", base, suffix);
+   return 0;
+}
+
+static int enable_unsigned_pd(int domain, int enable)
+{
+   struct remote_rpc_control_unsigned_module request = {
+      .domain = domain,
+      .enable = enable,
+   };
+
+   return remote_session_control(DSPRPC_CONTROL_UNSIGNED_MODULE, &request,
+                                 sizeof(request));
+}
+
+static void reset_domain_if_requested(int domain, int reset)
+{
+   struct remote_rpc_process_clean_params request = {
+      .domain = domain,
+   };
+   int err;
+
+   if (!reset)
+      return;
+
+   err = remote_session_control(FASTRPC_REMOTE_PROCESS_KILL, &request,
+                                sizeof(request));
+   if (err)
+      fprintf(stderr, "warning: domain reset returned 0x%x\n", err);
+}
+
+static int query_dsp_capability(int domain, int attribute, uint32_t *capability)
+{
+   fastrpc_capability request = {
+      .domain = (uint32_t)domain,
+      .attribute_ID = (uint32_t)attribute,
+      .capability = 0,
+   };
+   int err = remote_handle_control(DSPRPC_GET_DSP_INFO, &request,
+                                   sizeof(request));
+
+   if (!err)
+      *capability = request.capability;
+   return err;
+}
+
+static void usage(const char *prog)
+{
+   printf("Usage: %s [--scenario all|name[,name...]] [--size-mib N] [--min-ms N]\n"
+          "          [--iterations N] [--threads N]\n"
+          "          [--domain N] [--unsigned-pd 0|1] [--reset]\n\n"
+          "Scenarios: rpc-null, fp32-vmuladd, fp16-vmpyacc,\n"
+          "           qf16-vmpyadd, qf32-vmpyadd,\n"
+          "           int8-vrmpyacc, int8-vrmpy-add,\n"
+          "           mem-read, mem-write, mem-copy, all\n"
+          "Experimental explicit-only HMX: hmx-resource, hmx-cached,\n"
+          "           hmx-lock, hmx-int8-ub, hmx-int8-cm-ub, hmx-int8-uh\n",
+          prog);
+}
+
+static int parse_int_arg(const char *value, const char *name)
+{
+   char *end = NULL;
+   long parsed = strtol(value, &end, 0);
+
+   if (!value[0] || (end && *end)) {
+      fprintf(stderr, "invalid %s: %s\n", name, value);
+      exit(2);
+   }
+   return (int)parsed;
+}
+
+static size_t parse_size_arg(const char *value, const char *name)
+{
+   char *end = NULL;
+   unsigned long long parsed = strtoull(value, &end, 0);
+
+   if (!value[0] || (end && *end)) {
+      fprintf(stderr, "invalid %s: %s\n", name, value);
+      exit(2);
+   }
+   return (size_t)parsed;
+}
+
+static void parse_options(int argc, char **argv, struct options *opt)
+{
+   opt->domain = CDSP_DOMAIN_ID;
+   opt->unsigned_pd = 1;
+   opt->reset = 0;
+   opt->min_ms = 300;
+   opt->iterations = 0;
+   opt->threads = 1;
+   opt->size_mib = 64;
+   opt->scenario_filter = "all";
+
+   for (int i = 1; i < argc; ++i) {
+      if (!strcmp(argv[i], "--scenario") && i + 1 < argc) {
+         opt->scenario_filter = argv[++i];
+      } else if (!strcmp(argv[i], "--size-mib") && i + 1 < argc) {
+         opt->size_mib = parse_size_arg(argv[++i], "--size-mib");
+      } else if (!strcmp(argv[i], "--min-ms") && i + 1 < argc) {
+         opt->min_ms = parse_int_arg(argv[++i], "--min-ms");
+      } else if (!strcmp(argv[i], "--iterations") && i + 1 < argc) {
+         opt->iterations = parse_int_arg(argv[++i], "--iterations");
+      } else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
+         opt->threads = parse_int_arg(argv[++i], "--threads");
+      } else if (!strcmp(argv[i], "--domain") && i + 1 < argc) {
+         opt->domain = parse_int_arg(argv[++i], "--domain");
+      } else if (!strcmp(argv[i], "--unsigned-pd") && i + 1 < argc) {
+         opt->unsigned_pd = parse_int_arg(argv[++i], "--unsigned-pd");
+      } else if (!strcmp(argv[i], "--reset")) {
+         opt->reset = 1;
+      } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+         usage(argv[0]);
+         exit(0);
+      } else {
+         usage(argv[0]);
+         exit(2);
+      }
+   }
+
+   if (opt->min_ms <= 0)
+      opt->min_ms = 1;
+   if (opt->iterations < 0)
+      opt->iterations = 0;
+   if (opt->threads <= 0)
+      opt->threads = 1;
+   if (opt->threads > MAX_THREADS)
+      opt->threads = MAX_THREADS;
+   if (opt->size_mib == 0)
+      opt->size_mib = 1;
+}
+
+static bool scenario_enabled(const struct options *opt, const char *name)
+{
+   const char *filter = opt->scenario_filter;
+   size_t name_len = strlen(name);
+
+   if (!strcmp(filter, "all"))
+      return true;
+
+   while (*filter) {
+      const char *comma = strchr(filter, ',');
+      size_t len = comma ? (size_t)(comma - filter) : strlen(filter);
+
+      if (len == name_len && !strncmp(filter, name, len))
+         return true;
+      if (!comma)
+         break;
+      filter = comma + 1;
+   }
+
+   return false;
+}
+
+static bool scenario_enabled_explicitly(const struct options *opt,
+                                        const char *name)
+{
+   return strcmp(opt->scenario_filter, "all") &&
+          scenario_enabled(opt, name);
+}
+
+static void print_header(void)
+{
+   printf("%-22s %7s %12s %12s %14s %14s %12s %18s\n",
+          "scenario", "threads", "count", "host_ms", "dsp_cycles", "ops/cycle",
+          "score", "checksum");
+}
+
+static void print_row(const char *scenario, int threads, uint64_t count,
+                      double host_ms, uint64_t cycles, double ops_per_cycle,
+                      double score, const char *unit, uint64_t checksum)
+{
+   printf("%-22s %7d %12" PRIu64 " %12.3f %14" PRIu64 " %14.3f %9.2f %-6s 0x%016" PRIx64 "\n",
+          scenario, threads, count, host_ms, cycles, ops_per_cycle, score,
+          unit, checksum);
+}
+
+struct rpc_thread_arg {
+   remote_handle64 handle;
+   int calls;
+   int err;
+   uint64_t checksum;
+};
+
+struct compute_thread_arg {
+   remote_handle64 handle;
+   const struct compute_scenario *scenario;
+   int iterations;
+   int err;
+   uint64_t cycles;
+   uint64_t checksum;
+};
+
+static void *rpc_thread_main(void *data)
+{
+   struct rpc_thread_arg *arg = (struct rpc_thread_arg *)data;
+   int arch = 0;
+   int hvx_bytes = 0;
+   uint64_t overhead = 0;
+   uint64_t current_cycles = 0;
+
+   for (int i = 0; i < arg->calls; ++i) {
+      arg->err = cdsp_peak_get_info(arg->handle, &arch, &hvx_bytes, &overhead,
+                                    &current_cycles);
+      if (arg->err) {
+         arg->checksum = 0;
+         return NULL;
+      }
+   }
+
+   arg->checksum = current_cycles ^ overhead ^ (uint64_t)hvx_bytes;
+   return NULL;
+}
+
+static void *compute_thread_main(void *data)
+{
+   struct compute_thread_arg *arg = (struct compute_thread_arg *)data;
+
+   arg->err = cdsp_peak_bench_compute(arg->handle, arg->scenario->kernel,
+                                      arg->iterations, &arg->cycles,
+                                      &arg->checksum);
+   return NULL;
+}
+
+static int measure_rpc_threads(const remote_handle64 *handles, int nthreads,
+                               int calls, struct bench_result *result)
+{
+   struct rpc_thread_arg *args =
+      (struct rpc_thread_arg *)calloc((size_t)nthreads, sizeof(*args));
+   pthread_t *threads = NULL;
+   int err = 0;
+   int created = 0;
+   double start;
+
+   if (!args)
+      return -ENOMEM;
+   if (nthreads > 1) {
+      threads = (pthread_t *)calloc((size_t)nthreads, sizeof(*threads));
+      if (!threads) {
+         free(args);
+         return -ENOMEM;
+      }
+   }
+
+   for (int i = 0; i < nthreads; ++i) {
+      args[i].handle = handles[i];
+      args[i].calls = calls;
+   }
+
+   start = now_ms();
+   if (nthreads == 1) {
+      rpc_thread_main(&args[0]);
+   } else {
+      for (int i = 0; i < nthreads; ++i) {
+         err = pthread_create(&threads[i], NULL, rpc_thread_main, &args[i]);
+         if (err)
+            break;
+         ++created;
+      }
+      for (int i = 0; i < created; ++i)
+         pthread_join(threads[i], NULL);
+   }
+   result->elapsed_ms = now_ms() - start;
+
+   result->count = (uint64_t)calls * (uint64_t)nthreads;
+   result->cycles = 0;
+   result->checksum = 0xcbf29ce484222325ULL;
+
+   if (!err) {
+      for (int i = 0; i < nthreads; ++i) {
+         if (args[i].err) {
+            err = args[i].err;
+            break;
+         }
+         result->checksum = mix_checksum(result->checksum, args[i].checksum,
+                                         (uint64_t)i);
+      }
+   }
+
+   free(threads);
+   free(args);
+   return err;
+}
+
+static int run_rpc_null(const remote_handle64 *handles, const struct options *opt)
+{
+   int calls = 1;
+   int err;
+   struct bench_result result = {0};
+
+   for (;;) {
+      err = measure_rpc_threads(handles, opt->threads, calls, &result);
+      if (err)
+         return err;
+
+      if (result.elapsed_ms >= (double)opt->min_ms || calls >= (1 << 24))
+         break;
+      calls *= 2;
+   }
+
+   print_row("rpc-null", opt->threads, result.count, result.elapsed_ms, 0, 0.0,
+             result.elapsed_ms * 1000.0 / (double)result.count, "us/call",
+             result.checksum);
+   return 0;
+}
+
+static int measure_compute_threads(const remote_handle64 *handles, int nthreads,
+                                   const struct compute_scenario *scenario,
+                                   int iterations, struct bench_result *result)
+{
+   struct compute_thread_arg *args =
+      (struct compute_thread_arg *)calloc((size_t)nthreads, sizeof(*args));
+   pthread_t *threads = NULL;
+   int err = 0;
+   int created = 0;
+   double start;
+
+   if (!args)
+      return -ENOMEM;
+   if (nthreads > 1) {
+      threads = (pthread_t *)calloc((size_t)nthreads, sizeof(*threads));
+      if (!threads) {
+         free(args);
+         return -ENOMEM;
+      }
+   }
+
+   for (int i = 0; i < nthreads; ++i) {
+      args[i].handle = handles[i];
+      args[i].scenario = scenario;
+      args[i].iterations = iterations;
+   }
+
+   start = now_ms();
+   if (nthreads == 1) {
+      compute_thread_main(&args[0]);
+   } else {
+      for (int i = 0; i < nthreads; ++i) {
+         err = pthread_create(&threads[i], NULL, compute_thread_main, &args[i]);
+         if (err)
+            break;
+         ++created;
+      }
+      for (int i = 0; i < created; ++i)
+         pthread_join(threads[i], NULL);
+   }
+   result->elapsed_ms = now_ms() - start;
+
+   result->count = (uint64_t)iterations * (uint64_t)nthreads;
+   result->cycles = 0;
+   result->checksum = 0xcbf29ce484222325ULL;
+
+   if (!err) {
+      for (int i = 0; i < nthreads; ++i) {
+         if (args[i].err) {
+            err = args[i].err;
+            break;
+         }
+         if (args[i].cycles > result->cycles)
+            result->cycles = args[i].cycles;
+         result->checksum = mix_checksum(result->checksum, args[i].checksum,
+                                         (uint64_t)i);
+      }
+   }
+
+   free(threads);
+   free(args);
+   return err;
+}
+
+static void print_compute_result(const struct compute_scenario *scenario,
+                                 int nthreads, const struct bench_result *result)
+{
+   double ops = scenario->ops_per_iter * (double)result->count;
+   double score = ops / (result->elapsed_ms / 1000.0) / 1.0e9;
+   double ops_per_cycle = result->cycles ? ops / (double)result->cycles : 0.0;
+
+   print_row(scenario->name, nthreads, result->count, result->elapsed_ms,
+             result->cycles, ops_per_cycle, score, scenario->unit,
+             result->checksum);
+}
+
+static int run_compute(const remote_handle64 *handles, const struct options *opt,
+                       const struct compute_scenario *scenario)
+{
+   int iterations = opt->iterations > 0 ? opt->iterations : scenario->start_iterations;
+   int err;
+   struct bench_result result = {0};
+
+   for (;;) {
+      err = measure_compute_threads(handles, opt->threads, scenario, iterations,
+                                    &result);
+      if (err)
+         return err;
+
+      if (opt->iterations > 0 || result.elapsed_ms >= (double)opt->min_ms ||
+          iterations > MAX_COMPUTE_ITERATIONS)
+         break;
+      iterations *= 2;
+   }
+
+   print_compute_result(scenario, opt->threads, &result);
+   return 0;
+}
+
+static int choose_group_start_iterations(const struct options *opt, int group)
+{
+   int iterations = opt->iterations > 0 ? opt->iterations : 0;
+
+   if (iterations > 0)
+      return iterations;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(compute_scenarios); ++i) {
+      if (compute_scenarios[i].iteration_group != group)
+         continue;
+      if (!scenario_enabled(opt, compute_scenarios[i].name))
+         continue;
+      if (compute_scenarios[i].start_iterations > iterations)
+         iterations = compute_scenarios[i].start_iterations;
+   }
+
+   return iterations;
+}
+
+static int run_compute_group(const remote_handle64 *handles,
+                             const struct options *opt,
+                             int group)
+{
+   struct bench_result results[ARRAY_SIZE(compute_scenarios)] = {0};
+   int iterations = choose_group_start_iterations(opt, group);
+   int err;
+
+   if (iterations <= 0)
+      return 0;
+
+   for (;;) {
+      double min_elapsed = 1.0e300;
+      unsigned measured = 0;
+
+      for (unsigned i = 0; i < ARRAY_SIZE(compute_scenarios); ++i) {
+         if (compute_scenarios[i].iteration_group != group)
+            continue;
+         if (!scenario_enabled(opt, compute_scenarios[i].name))
+            continue;
+
+         err = measure_compute_threads(handles, opt->threads,
+                                       &compute_scenarios[i], iterations,
+                                       &results[i]);
+         if (err)
+            return err;
+         if (results[i].elapsed_ms < min_elapsed)
+            min_elapsed = results[i].elapsed_ms;
+         ++measured;
+      }
+
+      if (!measured || opt->iterations > 0 || min_elapsed >= (double)opt->min_ms ||
+          iterations > MAX_COMPUTE_ITERATIONS)
+         break;
+      iterations *= 2;
+   }
+
+   for (unsigned i = 0; i < ARRAY_SIZE(compute_scenarios); ++i) {
+      if (compute_scenarios[i].iteration_group != group)
+         continue;
+      if (!scenario_enabled(opt, compute_scenarios[i].name))
+         continue;
+      print_compute_result(&compute_scenarios[i], opt->threads, &results[i]);
+   }
+
+   return 0;
+}
+
+static void fill_hmx_inputs(uint8_t *activation, uint8_t *weight,
+                            uint8_t *output)
+{
+   memset(activation, 1, HMX_TILE_U8_BYTES);
+   memset(weight, 1, HMX_TILE_U8_BYTES);
+   memset(output, 0, HMX_OUTPUT_BYTES);
+}
+
+static int run_hmx_int8(remote_handle64 handle, const struct options *opt,
+                        const struct hmx_scenario *scenario,
+                        uint8_t *activation, uint8_t *weight,
+                        uint8_t *output)
+{
+   int repeats = opt->iterations > 0 ? opt->iterations : scenario->start_repeats;
+   int err;
+   struct bench_result result = {0};
+
+   for (;;) {
+      fill_hmx_inputs(activation, weight, output);
+
+      double start = now_ms();
+      err = cdsp_peak_bench_hmx_int8(handle, activation, HMX_TILE_U8_BYTES,
+                                     weight, HMX_TILE_U8_BYTES,
+                                     output, HMX_OUTPUT_BYTES,
+                                     scenario->mode, repeats,
+                                     &result.cycles, &result.checksum);
+      result.elapsed_ms = now_ms() - start;
+      result.count = (uint64_t)repeats;
+
+      if (err)
+         return err;
+      if (scenario->ops_per_repeat == 0.0 || opt->iterations > 0 ||
+          result.elapsed_ms >= (double)opt->min_ms ||
+          repeats >= MAX_HMX_REPEATS)
+         break;
+      repeats *= 2;
+   }
+
+   double ops = scenario->ops_per_repeat * (double)result.count;
+   double score = ops / (result.elapsed_ms / 1000.0) / 1.0e9;
+   double ops_per_cycle = result.cycles ? ops / (double)result.cycles : 0.0;
+
+   print_row(scenario->name, 1, result.count, result.elapsed_ms,
+             result.cycles, ops_per_cycle, score, scenario->unit,
+             result.checksum);
+   return 0;
+}
+
+static int fill_source(uint8_t *src, size_t bytes)
+{
+   for (size_t i = 0; i < bytes; ++i)
+      src[i] = (uint8_t)((i * 131u + 17u) & 0xffu);
+   return 0;
+}
+
+static int verify_copy(const uint8_t *src, const uint8_t *dst, size_t bytes)
+{
+   size_t probes = bytes < 4096 ? bytes : 4096;
+
+   for (size_t i = 0; i < probes; ++i) {
+      size_t idx = (i * 2654435761u) % bytes;
+      if (src[idx] != dst[idx])
+         return -1;
+   }
+   return 0;
+}
+
+struct mem_thread_arg {
+   remote_handle64 handle;
+   const struct mem_scenario *scenario;
+   uint8_t *src;
+   uint8_t *dst;
+   int len;
+   int repeats;
+   int err;
+   uint64_t cycles;
+   uint64_t checksum;
+};
+
+static void *mem_thread_main(void *data)
+{
+   struct mem_thread_arg *arg = (struct mem_thread_arg *)data;
+
+   if (arg->scenario->kind == 0) {
+      arg->err = cdsp_peak_bench_mem_read(arg->handle, arg->src, arg->len,
+                                          arg->repeats, &arg->cycles,
+                                          &arg->checksum);
+   } else if (arg->scenario->kind == 1) {
+      arg->err = cdsp_peak_bench_mem_write(arg->handle, arg->dst, arg->len,
+                                           arg->repeats, &arg->cycles,
+                                           &arg->checksum);
+   } else {
+      arg->err = cdsp_peak_bench_mem_copy(arg->handle, arg->src, arg->len,
+                                          arg->dst, arg->len, arg->repeats,
+                                          &arg->cycles, &arg->checksum);
+      if (!arg->err && verify_copy(arg->src, arg->dst, (size_t)arg->len))
+         arg->err = AEE_EFAILED;
+   }
+
+   return NULL;
+}
+
+static int measure_mem_threads(const remote_handle64 *handles, int nthreads,
+                               const struct mem_scenario *scenario,
+                               uint8_t **srcs, uint8_t **dsts, size_t bytes,
+                               int repeats, struct bench_result *result)
+{
+   struct mem_thread_arg *args =
+      (struct mem_thread_arg *)calloc((size_t)nthreads, sizeof(*args));
+   pthread_t *threads = NULL;
+   int len = (int)bytes;
+   int err = 0;
+   int created = 0;
+   double start;
+
+   if (!args)
+      return -ENOMEM;
+   if (nthreads > 1) {
+      threads = (pthread_t *)calloc((size_t)nthreads, sizeof(*threads));
+      if (!threads) {
+         free(args);
+         return -ENOMEM;
+      }
+   }
+
+   for (int i = 0; i < nthreads; ++i) {
+      args[i].handle = handles[i];
+      args[i].scenario = scenario;
+      args[i].src = srcs[i];
+      args[i].dst = dsts[i];
+      args[i].len = len;
+      args[i].repeats = repeats;
+   }
+
+   start = now_ms();
+   if (nthreads == 1) {
+      mem_thread_main(&args[0]);
+   } else {
+      for (int i = 0; i < nthreads; ++i) {
+         err = pthread_create(&threads[i], NULL, mem_thread_main, &args[i]);
+         if (err)
+            break;
+         ++created;
+      }
+      for (int i = 0; i < created; ++i)
+         pthread_join(threads[i], NULL);
+   }
+   result->elapsed_ms = now_ms() - start;
+
+   result->count = (uint64_t)repeats * (uint64_t)nthreads;
+   result->cycles = 0;
+   result->checksum = 0xcbf29ce484222325ULL;
+
+   if (!err) {
+      for (int i = 0; i < nthreads; ++i) {
+         if (args[i].err) {
+            err = args[i].err;
+            break;
+         }
+         if (args[i].cycles > result->cycles)
+            result->cycles = args[i].cycles;
+         result->checksum = mix_checksum(result->checksum, args[i].checksum,
+                                         (uint64_t)i);
+      }
+   }
+
+   free(threads);
+   free(args);
+   return err;
+}
+
+static int run_mem(const remote_handle64 *handles, const struct options *opt,
+                   const struct mem_scenario *scenario, uint8_t **srcs,
+                   uint8_t **dsts, size_t bytes)
+{
+   int repeats = 1;
+   int err;
+   struct bench_result result = {0};
+
+   for (;;) {
+      err = measure_mem_threads(handles, opt->threads, scenario, srcs, dsts,
+                                bytes, repeats, &result);
+      if (err)
+         return err;
+
+      if (result.elapsed_ms >= (double)opt->min_ms || repeats > (1 << 24))
+         break;
+      repeats *= 2;
+   }
+
+   double transferred = (double)bytes * (double)result.count *
+                        scenario->bytes_scale;
+   double score = transferred / (result.elapsed_ms / 1000.0) / 1.0e9;
+   double bytes_per_cycle = result.cycles ? transferred / (double)result.cycles : 0.0;
+
+   print_row(scenario->name, opt->threads, result.count, result.elapsed_ms,
+             result.cycles, bytes_per_cycle, score, "GB/s", result.checksum);
+   return 0;
+}
+
+static bool any_mem_scenario_enabled(const struct options *opt)
+{
+   for (unsigned i = 0; i < ARRAY_SIZE(mem_scenarios); ++i) {
+      if (scenario_enabled(opt, mem_scenarios[i].name))
+         return true;
+   }
+
+   return false;
+}
+
+static bool any_hmx_scenario_enabled(const struct options *opt)
+{
+   for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
+      if (scenario_enabled_explicitly(opt, hmx_scenarios[i].name))
+         return true;
+   }
+
+   return false;
+}
+
+static bool hmx_tile_execution_enabled(void)
+{
+   const char *enable = getenv("CDSP_PEAK_ENABLE_HMX_TILE");
+
+   return enable && !strcmp(enable, "1");
+}
+
+int main(int argc, char **argv)
+{
+   struct options opt;
+   char *uri = NULL;
+   remote_handle64 *handles = NULL;
+   int err = 0;
+   int arch = 0;
+   int hvx_bytes = 0;
+   uint64_t timer_overhead = 0;
+   uint64_t current_cycles = 0;
+   uint32_t vtcm_page = 0;
+   uint32_t vtcm_count = 0;
+   uint32_t hmx_depth = 0;
+   uint32_t hmx_spatial = 0;
+   uint8_t **srcs = NULL;
+   uint8_t **dsts = NULL;
+   uint8_t *hmx_activation = NULL;
+   uint8_t *hmx_weight = NULL;
+   uint8_t *hmx_output = NULL;
+   size_t bytes;
+   bool need_mem;
+   bool need_hmx;
+
+   parse_options(argc, argv, &opt);
+   need_mem = any_mem_scenario_enabled(&opt);
+   need_hmx = any_hmx_scenario_enabled(&opt);
+
+   bytes = opt.size_mib * 1024u * 1024u;
+   bytes &= ~(size_t)127u;
+   if (bytes > (size_t)INT32_MAX) {
+      fprintf(stderr, "--size-mib is too large for this QAIC v1 interface\n");
+      return 2;
+   }
+
+   reset_domain_if_requested(opt.domain, opt.reset);
+
+   if (opt.unsigned_pd) {
+      err = enable_unsigned_pd(opt.domain, 1);
+      if (err) {
+         fprintf(stderr, "unsigned PD enable failed: 0x%x\n", err);
+         return 1;
+      }
+   }
+
+   err = make_uri(opt.domain, &uri);
+   if (err) {
+      fprintf(stderr, "make_uri failed: %d\n", err);
+      return 1;
+   }
+
+   handles = (remote_handle64 *)calloc((size_t)opt.threads, sizeof(*handles));
+   if (!handles) {
+      err = -ENOMEM;
+      goto out;
+   }
+
+   for (int i = 0; i < opt.threads; ++i) {
+      err = cdsp_peak_open(uri, &handles[i]);
+      if (err) {
+         fprintf(stderr, "cdsp_peak_open thread %d failed: 0x%x\n", i, err);
+         goto out;
+      }
+   }
+
+   err = cdsp_peak_get_info(handles[0], &arch, &hvx_bytes, &timer_overhead,
+                            &current_cycles);
+   if (err) {
+      fprintf(stderr, "cdsp_peak_get_info failed: 0x%x\n", err);
+      goto out;
+   }
+
+   (void)query_dsp_capability(opt.domain, VTCM_PAGE, &vtcm_page);
+   (void)query_dsp_capability(opt.domain, VTCM_COUNT, &vtcm_count);
+   (void)query_dsp_capability(opt.domain, HMX_SUPPORT_DEPTH, &hmx_depth);
+   (void)query_dsp_capability(opt.domain, HMX_SUPPORT_SPATIAL, &hmx_spatial);
+
+   printf("cdsp_peak domain=%s arch=v%d hvx=%dB timer_overhead=%" PRIu64
+          " cycles threads=%d buffer=%zu MiB/thread vtcm_page=%u"
+          " vtcm_count=%u hmx_depth=%u hmx_spatial=%u\n",
+          domain_name(opt.domain), arch, hvx_bytes, timer_overhead,
+          opt.threads, bytes / (1024u * 1024u), vtcm_page, vtcm_count,
+          hmx_depth, hmx_spatial);
+
+   if (need_mem) {
+      srcs = (uint8_t **)calloc((size_t)opt.threads, sizeof(*srcs));
+      dsts = (uint8_t **)calloc((size_t)opt.threads, sizeof(*dsts));
+      if (!srcs || !dsts) {
+         err = -ENOMEM;
+         goto out;
+      }
+
+      for (int i = 0; i < opt.threads; ++i) {
+         srcs[i] = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
+                                           RPCMEM_DEFAULT_FLAGS, bytes);
+         dsts[i] = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
+                                           RPCMEM_DEFAULT_FLAGS, bytes);
+         if (!srcs[i] || !dsts[i]) {
+            fprintf(stderr, "rpcmem_alloc thread %d failed for %zu bytes\n",
+                    i, bytes);
+            err = -ENOMEM;
+            goto out;
+         }
+
+         fill_source(srcs[i], bytes);
+         memset(dsts[i], 0, bytes);
+      }
+   }
+
+   if (need_hmx && opt.threads > 1)
+      fprintf(stderr, "warning: HMX scenarios use one FastRPC handle; --threads is ignored for HMX rows\n");
+
+   print_header();
+
+   if (scenario_enabled(&opt, "rpc-null")) {
+      err = run_rpc_null(handles, &opt);
+      if (err)
+         goto out;
+   }
+
+   unsigned completed_groups = 0;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(compute_scenarios); ++i) {
+      if (!scenario_enabled(&opt, compute_scenarios[i].name))
+         continue;
+
+      if (compute_scenarios[i].iteration_group != ITERATION_GROUP_NONE) {
+         unsigned group_bit = 1u << compute_scenarios[i].iteration_group;
+
+         if (completed_groups & group_bit)
+            continue;
+         err = run_compute_group(handles, &opt,
+                                 compute_scenarios[i].iteration_group);
+         completed_groups |= group_bit;
+      } else {
+         err = run_compute(handles, &opt, &compute_scenarios[i]);
+      }
+      if (err) {
+         fprintf(stderr, "%s failed: 0x%x\n", compute_scenarios[i].name, err);
+         goto out;
+      }
+   }
+
+   for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
+      if (!scenario_enabled_explicitly(&opt, hmx_scenarios[i].name))
+         continue;
+      if (hmx_scenarios[i].ops_per_repeat > 0.0 &&
+          !hmx_tile_execution_enabled()) {
+         fprintf(stderr, "%s skipped: set CDSP_PEAK_ENABLE_HMX_TILE=1 to run HMX tile instructions; they can hang this v68 domain\n",
+                 hmx_scenarios[i].name);
+         continue;
+      }
+      if (!hmx_activation) {
+         hmx_activation = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
+                                                  RPCMEM_DEFAULT_FLAGS,
+                                                  HMX_TILE_U8_BYTES);
+         hmx_weight = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
+                                              RPCMEM_DEFAULT_FLAGS,
+                                              HMX_TILE_U8_BYTES);
+         hmx_output = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
+                                              RPCMEM_DEFAULT_FLAGS,
+                                              HMX_OUTPUT_BYTES);
+         if (!hmx_activation || !hmx_weight || !hmx_output) {
+            fprintf(stderr, "rpcmem_alloc failed for HMX probe buffers\n");
+            err = -ENOMEM;
+            goto out;
+         }
+      }
+
+      err = run_hmx_int8(handles[0], &opt, &hmx_scenarios[i], hmx_activation,
+                         hmx_weight, hmx_output);
+      if (err) {
+         fprintf(stderr, "%s failed: 0x%x\n", hmx_scenarios[i].name, err);
+         goto out;
+      }
+   }
+
+   for (unsigned i = 0; i < ARRAY_SIZE(mem_scenarios); ++i) {
+      if (!scenario_enabled(&opt, mem_scenarios[i].name))
+         continue;
+      err = run_mem(handles, &opt, &mem_scenarios[i], srcs, dsts, bytes);
+      if (err) {
+         fprintf(stderr, "%s failed: 0x%x\n", mem_scenarios[i].name, err);
+         goto out;
+      }
+   }
+
+out:
+   if (srcs) {
+      for (int i = 0; i < opt.threads; ++i) {
+         if (srcs[i])
+            rpcmem_free(srcs[i]);
+      }
+   }
+   if (dsts) {
+      for (int i = 0; i < opt.threads; ++i) {
+         if (dsts[i])
+            rpcmem_free(dsts[i]);
+      }
+   }
+   if (hmx_activation)
+      rpcmem_free(hmx_activation);
+   if (hmx_weight)
+      rpcmem_free(hmx_weight);
+   if (hmx_output)
+      rpcmem_free(hmx_output);
+   if (handles) {
+      for (int i = 0; i < opt.threads; ++i) {
+         if (handles[i])
+            cdsp_peak_close(handles[i]);
+      }
+   }
+   free(srcs);
+   free(dsts);
+   free(handles);
+   free(uri);
+
+   return err ? 1 : 0;
+}

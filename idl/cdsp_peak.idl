@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: BSD-3-Clause-Clear
+
+#include "remote.idl"
+
+const string IDL_VERSION = "0.1.0";
+
+interface cdsp_peak : remote_handle64 {
+   long get_info(rout long arch, rout long hvx_bytes,
+                 rout unsigned long long timer_overhead,
+                 rout unsigned long long current_cycles);
+
+   long bench_compute(in long kernel, in long iterations,
+                      rout unsigned long long cycles,
+                      rout unsigned long long checksum);
+
+   long bench_mem_read(in sequence<uint8_t> src, in long repeats,
+                       rout unsigned long long cycles,
+                       rout unsigned long long checksum);
+
+   long bench_mem_write(inrout sequence<uint8_t> dst, in long repeats,
+                        rout unsigned long long cycles,
+                        rout unsigned long long checksum);
+
+   long bench_mem_copy(in sequence<uint8_t> src,
+                       inrout sequence<uint8_t> dst,
+                       in long repeats,
+                       rout unsigned long long cycles,
+                       rout unsigned long long checksum);
+
+   long bench_hmx_int8(in sequence<uint8_t> activation,
+                       in sequence<uint8_t> weight,
+                       inrout sequence<uint8_t> output,
+                       in long mode,
+                       in long repeats,
+                       rout unsigned long long cycles,
+                       rout unsigned long long checksum);
+};
