@@ -17,9 +17,9 @@ It measures a narrow first set of synthetic limits:
 - `mem-read`, `mem-write`, `mem-copy`: shared `rpcmem` DDR bandwidth.
 - `hmx-resource`, `hmx-cached`, `hmx-lock`: experimental v68 HMX resource
   probes for VTCM acquire, cached acquire, and HMX lock.
-- `hmx-int8-ub`, `hmx-int8-cm-ub`, `hmx-int8-uh`: experimental v68 HMX int8
-  tile instruction probes. These are explicit-only, are not included in `all`,
-  and require `CDSP_PEAK_ENABLE_HMX_TILE=1`.
+- `hmx-int8-ub`, `hmx-int8-cm-ub`, `hmx-int8-uh`, and the `hmx-int8-*-x*`
+  burst variants: experimental v68 HMX int8 tile instruction probes, included
+  in the default `all` scenario.
 
 ## Requirements
 
@@ -86,7 +86,8 @@ Useful options:
 ./cdsp_peak/build/host/cdsp_peak --scenario qf32-vmpyadd,int8-vrmpy-add --threads 2
 ./cdsp_peak/build/host/cdsp_peak --scenario mem-copy --size-mib 128
 ./cdsp_peak/build/host/cdsp_peak --scenario hmx-resource,hmx-cached,hmx-lock --iterations 1
-CDSP_PEAK_ENABLE_HMX_TILE=1 timeout 10s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-cm-ub --iterations 1
+timeout 10s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-cm-ub --iterations 1
+timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-full-x64 --min-ms 300 --size-mib 1
 ./cdsp_peak/build/host/cdsp_peak --scenario all --power none
 ./cdsp_peak/build/host/cdsp_peak --reset
 ```
@@ -124,10 +125,23 @@ compile the DSP-side HMX path with `-mhmx`, weak-link the `compute_resource_*`
 runtime symbols used by QNN/Hexagon SDK code, stage tiles in VTCM, and use Open
 Access intrinsics for `mxclracc`, `bias = mxmem2(...)`,
 `activation.ub = mxmem(...)`, `weight.b = mxmem(...)`, and direct `acc` stores.
-On this v68 target the resource, cached acquire, and HMX lock probes return, but
-the current int8 tile sequences can still hang the domain. Keep actual
-`hmx-int8-*` tile execution behind `CDSP_PEAK_ENABLE_HMX_TILE=1` and use
-`timeout` plus `--reset` while iterating on layouts and instruction counts.
+On this v68 target, with the default `--power max` HAP votes, the resource,
+cached acquire, HMX lock, and current int8 tile probes return, so HMX is part of
+the default `all` scenario. These instruction layouts are still experimental;
+use `timeout` plus `--reset` while iterating on layouts and instruction counts.
+
+The simple `hmx-int8-ub`/`hmx-int8-uh` rows store one HMX half tile and use a
+conservative `32 x 32 x 32 x 2` int8-op count per activation/weight packet.
+The `hmx-int8-ub-full-x16`, `hmx-int8-ub-full-x32`, and
+`hmx-int8-ub-full-x64` rows keep accumulating on one HMX accumulator, then
+store both `before` and `after` `sat.ub` halves with `before:retain` plus
+`after`. They use the FastRPC-reported v68 `hmx_depth=32` and
+`hmx_spatial=64` shape, so each activation/weight packet is counted as
+`32 x 64 x 32 x 2` int8 ops. On the current target, `hmx-int8-ub-full-x64`
+reaches about 8.0k ops/cycle and 11.5 TOPS with the default `--power max`
+votes, which is close to the 8192 ops/cycle ideal for a single v68 HMX issue
+stream. The remaining gap to a 12 TOPS marketing number is consistent with the
+observed runtime clock rather than an obviously missing packet pattern.
 
 The currently generated HMX instruction packets can be inspected with:
 

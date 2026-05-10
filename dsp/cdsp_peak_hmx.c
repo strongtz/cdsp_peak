@@ -17,6 +17,11 @@
 #define CDSP_PEAK_HMX_INT8_UB 0
 #define CDSP_PEAK_HMX_INT8_CM_UB 1
 #define CDSP_PEAK_HMX_INT8_UH 2
+#define CDSP_PEAK_HMX_INT8_UB_X16 10
+#define CDSP_PEAK_HMX_INT8_UH_X16 11
+#define CDSP_PEAK_HMX_INT8_UB_FULL_X16 12
+#define CDSP_PEAK_HMX_INT8_UB_FULL_X32 13
+#define CDSP_PEAK_HMX_INT8_UB_FULL_X64 14
 #define CDSP_PEAK_HMX_PROBE_RESOURCE 100
 #define CDSP_PEAK_HMX_PROBE_CACHED 101
 #define CDSP_PEAK_HMX_PROBE_LOCK 102
@@ -266,6 +271,88 @@ static __attribute__((noinline)) void hmx_int8_tile_uh(const uint8_t *activation
    Q6_mxmem_AR_after_sat_uh_2x1(output, 0);
 }
 
+static __attribute__((always_inline)) inline void
+hmx_int8_accumulate_ub(const uint8_t *activation, const uint8_t *weight)
+{
+   const uint32_t limit = HMX_TILE_U8_BYTES - 1;
+
+   Q6_activation_ub_mxmem_RR(hmx_addr(activation), limit);
+   Q6_weight_b_mxmem_RR(hmx_addr(weight), limit);
+}
+
+static __attribute__((always_inline)) inline void
+hmx_int8_accumulate_ub_x16(const uint8_t *activation, const uint8_t *weight)
+{
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+   hmx_int8_accumulate_ub(activation, weight);
+}
+
+static __attribute__((noinline)) void hmx_int8_tile_ub_x16(const uint8_t *activation,
+                                                           const uint8_t *weight,
+                                                           uint8_t *output)
+{
+   Q6_mxclracc();
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   Q6_mxmem_AR_after_sat_ub(output, 0);
+}
+
+static __attribute__((noinline)) void
+hmx_int8_tile_ub_full_x16(const uint8_t *activation, const uint8_t *weight,
+                          uint8_t *output)
+{
+   Q6_mxclracc();
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   Q6_mxmem_AR_before_retain_sat_ub(output, 0);
+   Q6_mxmem_AR_after_sat_ub(output + HMX_TILE_U8_BYTES, 0);
+}
+
+static __attribute__((noinline)) void
+hmx_int8_tile_ub_full_x32(const uint8_t *activation, const uint8_t *weight,
+                          uint8_t *output)
+{
+   Q6_mxclracc();
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   Q6_mxmem_AR_before_retain_sat_ub(output, 0);
+   Q6_mxmem_AR_after_sat_ub(output + HMX_TILE_U8_BYTES, 0);
+}
+
+static __attribute__((noinline)) void
+hmx_int8_tile_ub_full_x64(const uint8_t *activation, const uint8_t *weight,
+                          uint8_t *output)
+{
+   Q6_mxclracc();
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   Q6_mxmem_AR_before_retain_sat_ub(output, 0);
+   Q6_mxmem_AR_after_sat_ub(output + HMX_TILE_U8_BYTES, 0);
+}
+
+static __attribute__((noinline)) void hmx_int8_tile_uh_x16(const uint8_t *activation,
+                                                           const uint8_t *weight,
+                                                           uint8_t *output)
+{
+   Q6_mxclracc();
+   hmx_int8_accumulate_ub_x16(activation, weight);
+   Q6_mxmem_AR_after_sat_uh_2x1(output, 0);
+}
+
 int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
                              const uint8_t *activation, int activationLen,
                              const uint8_t *weight, int weightLen,
@@ -301,9 +388,16 @@ int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
    switch (mode) {
    case CDSP_PEAK_HMX_INT8_UB:
    case CDSP_PEAK_HMX_INT8_CM_UB:
+   case CDSP_PEAK_HMX_INT8_UB_X16:
       written_len = HMX_TILE_U8_BYTES;
       break;
+   case CDSP_PEAK_HMX_INT8_UB_FULL_X16:
+   case CDSP_PEAK_HMX_INT8_UB_FULL_X32:
+   case CDSP_PEAK_HMX_INT8_UB_FULL_X64:
+      written_len = HMX_TILE_U16_BYTES;
+      break;
    case CDSP_PEAK_HMX_INT8_UH:
+   case CDSP_PEAK_HMX_INT8_UH_X16:
       written_len = HMX_TILE_U16_BYTES;
       break;
    case CDSP_PEAK_HMX_PROBE_RESOURCE:
@@ -382,6 +476,24 @@ int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
          break;
       case CDSP_PEAK_HMX_INT8_UH:
          hmx_int8_tile_uh(vtcm_activation, vtcm_weight, vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_INT8_UB_X16:
+         hmx_int8_tile_ub_x16(vtcm_activation, vtcm_weight, vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_INT8_UB_FULL_X16:
+         hmx_int8_tile_ub_full_x16(vtcm_activation, vtcm_weight,
+                                   vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_INT8_UB_FULL_X32:
+         hmx_int8_tile_ub_full_x32(vtcm_activation, vtcm_weight,
+                                   vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_INT8_UB_FULL_X64:
+         hmx_int8_tile_ub_full_x64(vtcm_activation, vtcm_weight,
+                                   vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_INT8_UH_X16:
+         hmx_int8_tile_uh_x16(vtcm_activation, vtcm_weight, vtcm_output);
          break;
       default:
          break;

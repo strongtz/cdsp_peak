@@ -26,6 +26,11 @@
 #define HMX_INT8_UB 0
 #define HMX_INT8_CM_UB 1
 #define HMX_INT8_UH 2
+#define HMX_INT8_UB_X16 10
+#define HMX_INT8_UH_X16 11
+#define HMX_INT8_UB_FULL_X16 12
+#define HMX_INT8_UB_FULL_X32 13
+#define HMX_INT8_UB_FULL_X64 14
 #define HMX_PROBE_RESOURCE 100
 #define HMX_PROBE_CACHED 101
 #define HMX_PROBE_LOCK 102
@@ -45,7 +50,7 @@
 #define ITERATION_GROUP_NONE 0
 #define ITERATION_GROUP_INT8 1
 #define MAX_COMPUTE_ITERATIONS 0x30000000
-#define MAX_HMX_REPEATS 0x100000
+#define MAX_HMX_REPEATS 0x1000000
 #define MAX_THREADS 256
 
 struct options {
@@ -122,6 +127,16 @@ static const struct hmx_scenario hmx_scenarios[] = {
     1, HMX_TILE_U8_BYTES},
    {"hmx-int8-uh", HMX_INT8_UH, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0, 1,
     HMX_OUTPUT_BYTES},
+   {"hmx-int8-ub-x16", HMX_INT8_UB_X16, "GIOPS",
+    16.0 * 32.0 * 32.0 * 32.0 * 2.0, 1, HMX_TILE_U8_BYTES},
+   {"hmx-int8-uh-x16", HMX_INT8_UH_X16, "GIOPS",
+    16.0 * 32.0 * 32.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+   {"hmx-int8-ub-full-x16", HMX_INT8_UB_FULL_X16, "GIOPS",
+    16.0 * 32.0 * 64.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+   {"hmx-int8-ub-full-x32", HMX_INT8_UB_FULL_X32, "GIOPS",
+    32.0 * 32.0 * 64.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+   {"hmx-int8-ub-full-x64", HMX_INT8_UB_FULL_X64, "GIOPS",
+    64.0 * 32.0 * 64.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
 };
 
 static double now_ms(void)
@@ -310,8 +325,11 @@ static void usage(const char *prog)
           "           qf16-vmpyadd, qf32-vmpyadd,\n"
           "           int8-vrmpyacc, int8-vrmpy-add,\n"
           "           mem-read, mem-write, mem-copy, all\n"
-          "Experimental explicit-only HMX: hmx-resource, hmx-cached,\n"
-          "           hmx-lock, hmx-int8-ub, hmx-int8-cm-ub, hmx-int8-uh\n"
+          "HMX: hmx-resource, hmx-cached,\n"
+          "           hmx-lock, hmx-int8-ub, hmx-int8-cm-ub, hmx-int8-uh,\n"
+          "           hmx-int8-ub-x16, hmx-int8-uh-x16,"
+          " hmx-int8-ub-full-x16, hmx-int8-ub-full-x32,"
+          " hmx-int8-ub-full-x64\n"
           "Default power mode is max: compute client, DCVS max, HVX on, HMX on.\n",
           prog);
 }
@@ -423,13 +441,6 @@ static bool scenario_enabled(const struct options *opt, const char *name)
    }
 
    return false;
-}
-
-static bool scenario_enabled_explicitly(const struct options *opt,
-                                        const char *name)
-{
-   return strcmp(opt->scenario_filter, "all") &&
-          scenario_enabled(opt, name);
 }
 
 static void print_header(void)
@@ -956,18 +967,11 @@ static bool any_mem_scenario_enabled(const struct options *opt)
 static bool any_hmx_scenario_enabled(const struct options *opt)
 {
    for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
-      if (scenario_enabled_explicitly(opt, hmx_scenarios[i].name))
+      if (scenario_enabled(opt, hmx_scenarios[i].name))
          return true;
    }
 
    return false;
-}
-
-static bool hmx_tile_execution_enabled(void)
-{
-   const char *enable = getenv("CDSP_PEAK_ENABLE_HMX_TILE");
-
-   return enable && !strcmp(enable, "1");
 }
 
 int main(int argc, char **argv)
@@ -1121,14 +1125,8 @@ int main(int argc, char **argv)
    }
 
    for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
-      if (!scenario_enabled_explicitly(&opt, hmx_scenarios[i].name))
+      if (!scenario_enabled(&opt, hmx_scenarios[i].name))
          continue;
-      if (hmx_scenarios[i].ops_per_repeat > 0.0 &&
-          !hmx_tile_execution_enabled()) {
-         fprintf(stderr, "%s skipped: set CDSP_PEAK_ENABLE_HMX_TILE=1 to run HMX tile instructions; they can hang this v68 domain\n",
-                 hmx_scenarios[i].name);
-         continue;
-      }
       if (!hmx_activation) {
          hmx_activation = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
                                                   RPCMEM_DEFAULT_FLAGS,
