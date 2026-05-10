@@ -21,8 +21,9 @@ HOST_TEST := $(HOST_DIR)/cdsp_peak
 DSP_SKEL_SO := $(DSP_DIR)/libcdsp_peak_skel.so
 
 SCENARIO ?= all
-THREADS ?= 1
+THREADS ?=
 RUN_ARGS ?=
+THREAD_ARGS := $(if $(THREADS),--threads $(THREADS),)
 
 HOST_CFLAGS := -O2 -fPIC -Wall -Wextra --target=aarch64-linux-gnu \
 	-I$(GEN_DIR) -I$(FASTRPC_INC) -I/usr/include/aarch64-linux-gnu \
@@ -89,7 +90,7 @@ run: all
 	LD_LIBRARY_PATH=$(abspath $(HOST_DIR)) \
 	ADSP_LIBRARY_PATH=$(abspath $(DSP_DIR)) \
 	DSP_LIBRARY_PATH=$(abspath $(DSP_DIR)) \
-	$(HOST_TEST) --scenario $(SCENARIO) --threads $(THREADS) $(RUN_ARGS)
+	$(HOST_TEST) --scenario $(SCENARIO) $(THREAD_ARGS) $(RUN_ARGS)
 
 inspect: $(DSP_SKEL_SO)
 	$(HEXAGON_TOOLS_ROOT)/Tools/bin/hexagon-llvm-readelf -h -d $(DSP_SKEL_SO)

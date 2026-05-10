@@ -74,7 +74,8 @@ DSP_LIBRARY_PATH="$PWD/cdsp_peak/build/dsp/v68" \
 The `run` target accepts make/environment variables:
 
 ```sh
-THREADS=2 make -C cdsp_peak run
+make -C cdsp_peak run
+THREADS=1 make -C cdsp_peak run
 SCENARIO=qf32-vmpyadd THREADS=2 RUN_ARGS="--min-ms 100 --size-mib 1" make -C cdsp_peak run
 ```
 
@@ -99,14 +100,16 @@ objects under `build/`.
 
 The first version is intentionally v68-only. `mem-copy` reports touched bytes
 as read plus written bytes, so its GB/s number is twice the copied payload size.
-`--threads` opens one FastRPC handle per host thread and gives each memory
-thread its own `--size-mib` source and destination buffers. The `count` column
-is total calls for `rpc-null`, total iterations for compute scenarios, and
-total repeats for memory scenarios. Enabled int8 scenarios share one per-thread
-iteration count so their checksums are directly comparable. Use `--threads`
-inside one `cdsp_peak` process; running multiple benchmark processes against
-the same CDSP domain concurrently can leave FastRPC open calls blocked until the
-domain recovers or is reset externally.
+When `--threads` is omitted, `cdsp_peak` uses the FastRPC-reported
+`HVX_SUPPORT_128B` count as the default thread count. `--threads` opens one
+FastRPC handle per host thread and gives each memory thread its own
+`--size-mib` source and destination buffers. The `count` column is total calls
+for `rpc-null`, total iterations for compute scenarios, and total repeats for
+memory scenarios. Enabled int8 scenarios share one per-thread iteration count so
+their checksums are directly comparable. Use `--threads` inside one `cdsp_peak`
+process; running multiple benchmark processes against the same CDSP domain
+concurrently can leave FastRPC open calls blocked until the domain recovers or
+is reset externally.
 
 The banner prints FastRPC-reported capability fields such as VTCM page/count and
 HMX depth/spatial support. These are advisory capability values, not proof that

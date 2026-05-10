@@ -60,6 +60,7 @@ struct options {
    int min_ms;
    int iterations;
    int threads;
+   int threads_auto;
    int power_mode;
    size_t size_mib;
    const char *scenario_filter;
@@ -330,6 +331,7 @@ static void usage(const char *prog)
           "           hmx-int8-ub-x16, hmx-int8-uh-x16,"
           " hmx-int8-ub-full-x16, hmx-int8-ub-full-x32,"
           " hmx-int8-ub-full-x64\n"
+          "Default thread count is HVX_SUPPORT_128B, falling back to 1.\n"
           "Default power mode is max: compute client, DCVS max, HVX on, HMX on.\n",
           prog);
 }
@@ -376,7 +378,8 @@ static void parse_options(int argc, char **argv, struct options *opt)
    opt->reset = 0;
    opt->min_ms = 300;
    opt->iterations = 0;
-   opt->threads = 1;
+   opt->threads = 0;
+   opt->threads_auto = 1;
    opt->power_mode = POWER_MAX;
    opt->size_mib = 64;
    opt->scenario_filter = "all";
@@ -392,6 +395,7 @@ static void parse_options(int argc, char **argv, struct options *opt)
          opt->iterations = parse_int_arg(argv[++i], "--iterations");
       } else if (!strcmp(argv[i], "--threads") && i + 1 < argc) {
          opt->threads = parse_int_arg(argv[++i], "--threads");
+         opt->threads_auto = opt->threads <= 0;
       } else if (!strcmp(argv[i], "--domain") && i + 1 < argc) {
          opt->domain = parse_int_arg(argv[++i], "--domain");
       } else if (!strcmp(argv[i], "--unsigned-pd") && i + 1 < argc) {
@@ -413,12 +417,23 @@ static void parse_options(int argc, char **argv, struct options *opt)
       opt->min_ms = 1;
    if (opt->iterations < 0)
       opt->iterations = 0;
-   if (opt->threads <= 0)
-      opt->threads = 1;
    if (opt->threads > MAX_THREADS)
       opt->threads = MAX_THREADS;
    if (opt->size_mib == 0)
       opt->size_mib = 1;
+}
+
+static void resolve_thread_count(struct options *opt, uint32_t hvx_64b,
+                                 uint32_t hvx_128b)
+{
+   uint32_t auto_threads = hvx_128b ? hvx_128b : hvx_64b;
+
+   if (opt->threads_auto)
+      opt->threads = auto_threads > 0 ? (int)auto_threads : 1;
+   if (opt->threads <= 0)
+      opt->threads = 1;
+   if (opt->threads > MAX_THREADS)
+      opt->threads = MAX_THREADS;
 }
 
 static bool scenario_enabled(const struct options *opt, const char *name)
@@ -984,6 +999,8 @@ int main(int argc, char **argv)
    int hvx_bytes = 0;
    uint64_t timer_overhead = 0;
    uint64_t current_cycles = 0;
+   uint32_t hvx_64b = 0;
+   uint32_t hvx_128b = 0;
    uint32_t vtcm_page = 0;
    uint32_t vtcm_count = 0;
    uint32_t hmx_depth = 0;
@@ -1018,6 +1035,10 @@ int main(int argc, char **argv)
          return 1;
       }
    }
+
+   (void)query_dsp_capability(opt.domain, HVX_SUPPORT_64B, &hvx_64b);
+   (void)query_dsp_capability(opt.domain, HVX_SUPPORT_128B, &hvx_128b);
+   resolve_thread_count(&opt, hvx_64b, hvx_128b);
 
    err = make_uri(opt.domain, &uri);
    if (err) {
@@ -1056,13 +1077,14 @@ int main(int argc, char **argv)
    (void)query_dsp_capability(opt.domain, HMX_SUPPORT_DEPTH, &hmx_depth);
    (void)query_dsp_capability(opt.domain, HMX_SUPPORT_SPATIAL, &hmx_spatial);
 
-   printf("cdsp_peak domain=%s arch=v%d hvx=%dB timer_overhead=%" PRIu64
+   printf("cdsp_peak domain=%s arch=v%d hvx=%dB hvx64=%u hvx128=%u"
+          " timer_overhead=%" PRIu64
           " cycles threads=%d buffer=%zu MiB/thread vtcm_page=%u"
           " vtcm_count=%u hmx_depth=%u hmx_spatial=%u power=%s"
           " power_mask=0x%x\n",
-          domain_name(opt.domain), arch, hvx_bytes, timer_overhead,
-          opt.threads, bytes / (1024u * 1024u), vtcm_page, vtcm_count,
-          hmx_depth, hmx_spatial, power_mode_name(opt.power_mode),
+          domain_name(opt.domain), arch, hvx_bytes, hvx_64b, hvx_128b,
+          timer_overhead, opt.threads, bytes / (1024u * 1024u), vtcm_page,
+          vtcm_count, hmx_depth, hmx_spatial, power_mode_name(opt.power_mode),
           power_applied_mask);
 
    if (need_mem) {
