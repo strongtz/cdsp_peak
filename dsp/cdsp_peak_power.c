@@ -3,10 +3,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <HAP_power.h>
-
 #include "AEEStdErr.h"
 #include "cdsp_peak.h"
+#include "cdsp_peak_hap_power.h"
 
 #define CDSP_PEAK_POWER_NONE 0
 #define CDSP_PEAK_POWER_MAX 1

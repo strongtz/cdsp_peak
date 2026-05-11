@@ -29,7 +29,6 @@ Default paths assume this sibling directory layout:
 hexagon-experiment/
   QAIC/
   Hexagon_open_access.Core.19.0.02.Linux-ARM64/
-  Hexagon_SDK/6.5.0.0/
   cdsp_peak/
 ```
 
@@ -41,10 +40,10 @@ Required host pieces:
 - QAIC built from the open-source Qualcomm QAIC repository.
 - LLVM/clang for the AArch64 host build.
 - Hexagon Open Access tools for `hexagon-clang` and Hexagon target headers.
-- Hexagon SDK headers for the DSP power vote interface. The build uses the SDK
-  only as an include source for `HAP_power.h`; the DSP compiler still comes
-  from the Open Access toolchain.
 - `libbsd` for the generated QAIC host stub link.
+
+The build does not require Hexagon SDK headers. The small subset of
+`HAP_power_set` ABI declarations used for power voting lives in this tree.
 
 The Makefile variables can be overridden if your tree differs:
 
@@ -52,7 +51,6 @@ The Makefile variables can be overridden if your tree differs:
 make -C cdsp_peak \
   QAIC=/path/to/qaic \
   HEXAGON_TOOLS_ROOT=/path/to/Hexagon_open_access.Core.19.0.02.Linux-ARM64 \
-  HEXAGON_SDK_ROOT=/path/to/Hexagon_SDK/6.5.0.0 \
   FASTRPC_INC=/path/to/fastrpc/include
 ```
 
