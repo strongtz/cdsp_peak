@@ -283,9 +283,23 @@ static uint32_t normalize_hexagon_arch(uint32_t arch)
 
 static const char *skel_arch_suffix(uint32_t arch)
 {
-   if (normalize_hexagon_arch(arch) >= 73)
+   switch (normalize_hexagon_arch(arch)) {
+   case 81:
+      return "v81";
+   case 79:
+      return "v79";
+   case 75:
+      return "v75";
+   case 73:
       return "v73";
-   return "v68";
+   case 69:
+      return "v69";
+   case 68:
+      return "v68";
+   default:
+      break;
+   }
+   return NULL;
 }
 
 static int make_uri(int domain, uint32_t arch, char **uri)
@@ -302,6 +316,14 @@ static int make_uri(int domain, uint32_t arch, char **uri)
          return -ENOMEM;
       snprintf(*uri, len, "%s%s", base, suffix);
       return 0;
+   }
+
+   if (!arch_suffix) {
+      fprintf(stderr,
+              "unsupported Hexagon ARCH_VER 0x%x (normalized v%u);"
+              " no exact skel build is available\n",
+              arch, normalize_hexagon_arch(arch));
+      return -ENOTSUP;
    }
 
    len = (size_t)snprintf(NULL, 0, CDSP_PEAK_SKEL_URI_FORMAT "%s",
@@ -343,16 +365,23 @@ static int executable_dir(char *dir, size_t dir_size)
 
 static bool executable_dir_has_skel(const char *dir)
 {
+   static const char *skel_names[] = {
+      "libcdsp_peak_skel_v68.so",
+      "libcdsp_peak_skel_v69.so",
+      "libcdsp_peak_skel_v73.so",
+      "libcdsp_peak_skel_v75.so",
+      "libcdsp_peak_skel_v79.so",
+      "libcdsp_peak_skel_v81.so",
+   };
    char path[PATH_MAX];
-   int needed;
+   size_t i;
 
-   needed = snprintf(path, sizeof(path), "%s/libcdsp_peak_skel_v68.so", dir);
-   if (needed > 0 && (size_t)needed < sizeof(path) && access(path, R_OK) == 0)
-      return true;
-
-   needed = snprintf(path, sizeof(path), "%s/libcdsp_peak_skel_v73.so", dir);
-   if (needed > 0 && (size_t)needed < sizeof(path) && access(path, R_OK) == 0)
-      return true;
+   for (i = 0; i < ARRAY_SIZE(skel_names); ++i) {
+      int needed = snprintf(path, sizeof(path), "%s/%s", dir, skel_names[i]);
+      if (needed > 0 && (size_t)needed < sizeof(path) &&
+          access(path, R_OK) == 0)
+         return true;
+   }
 
    return false;
 }
@@ -1237,6 +1266,7 @@ int main(int argc, char **argv)
    uint32_t hmx_depth = 0;
    uint32_t hmx_spatial = 0;
    int power_applied_mask = 0;
+   const char *skel_suffix;
    uint8_t **srcs = NULL;
    uint8_t **dsts = NULL;
    uint8_t *hmx_activation = NULL;
@@ -1295,9 +1325,13 @@ int main(int argc, char **argv)
 
    err = make_uri(opt.domain, arch_capability, &uri);
    if (err) {
-      fprintf(stderr, "make_uri failed: %d\n", err);
+      if (err != -ENOTSUP)
+         fprintf(stderr, "make_uri failed: %d\n", err);
       return 1;
    }
+   skel_suffix = skel_arch_suffix(arch_capability);
+   if (!skel_suffix)
+      skel_suffix = "custom";
 
    handles = (remote_handle64 *)calloc((size_t)opt.threads, sizeof(*handles));
    if (!handles) {
@@ -1335,10 +1369,10 @@ int main(int argc, char **argv)
           " cycles threads=%d buffer=%zu MiB/thread vtcm_page=%u"
           " vtcm_count=%u hmx_depth=%u hmx_spatial=%u power=%s"
           " power_mask=0x%x\n",
-          domain_name(opt.domain), arch, skel_arch_suffix(arch_capability),
-          hvx_bytes, hvx_64b, hvx_128b, timer_overhead, opt.threads,
-          bytes / (1024u * 1024u), vtcm_page, vtcm_count, hmx_depth,
-          hmx_spatial, power_mode_name(opt.power_mode), power_applied_mask);
+          domain_name(opt.domain), arch, skel_suffix, hvx_bytes, hvx_64b,
+          hvx_128b, timer_overhead, opt.threads, bytes / (1024u * 1024u),
+          vtcm_page, vtcm_count, hmx_depth, hmx_spatial,
+          power_mode_name(opt.power_mode), power_applied_mask);
 
    if (need_mem) {
       srcs = (uint8_t **)calloc((size_t)opt.threads, sizeof(*srcs));

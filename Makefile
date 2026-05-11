@@ -14,9 +14,7 @@ ANDROID_SYSROOT := $(ANDROID_DIR)/sysroot
 ANDROID_SYSROOT_LIB := $(ANDROID_SYSROOT)/system/lib64
 ANDROID_VENDOR_LIB := $(ANDROID_SYSROOT)/vendor/lib64
 DSP_RUN_DIR := build/dsp
-DSP_ARCHES := v68 v73
-DSP_DIR_v68 := build/dsp/v68
-DSP_DIR_v73 := build/dsp/v73
+DSP_ARCHES := v68 v69 v73 v75 v79 v81
 INSTALL_DIR ?= $(abspath install)
 ANDROID_INSTALL_DIR ?= $(abspath $(ANDROID_DIR)/install)
 
@@ -24,20 +22,23 @@ IDL := idl/cdsp_peak.idl
 GEN_STAMP := $(GEN_DIR)/.qaic.stamp
 GEN_OUTPUTS := $(GEN_DIR)/cdsp_peak.h $(GEN_DIR)/cdsp_peak_stub.c \
 	$(GEN_DIR)/cdsp_peak_skel.c
-GEN_SKEL_C_v68 := $(GEN_DIR)/cdsp_peak_skel_v68.c
-GEN_SKEL_C_v73 := $(GEN_DIR)/cdsp_peak_skel_v73.c
+
+define DSP_ARCH_VARS
+DSP_DIR_$(1) := build/dsp/$(1)
+GEN_SKEL_C_$(1) := $$(GEN_DIR)/cdsp_peak_skel_$(1).c
+DSP_SKEL_SO_$(1) := $$(DSP_DIR_$(1))/libcdsp_peak_skel_$(1).so
+DSP_RUN_SKEL_SO_$(1) := $$(DSP_RUN_DIR)/libcdsp_peak_skel_$(1).so
+endef
+
+$(foreach arch,$(DSP_ARCHES),$(eval $(call DSP_ARCH_VARS,$(arch))))
 
 HOST_STUB_SO := $(HOST_DIR)/libcdsp_peak_stub.so
 HOST_TEST := $(HOST_DIR)/cdsp_peak
 ANDROID_STUB_SO := $(ANDROID_DIR)/libcdsp_peak_stub.so
 ANDROID_TEST := $(ANDROID_DIR)/cdsp_peak
 ANDROID_SYSROOT_STAMP := $(ANDROID_SYSROOT)/.stamp
-DSP_SKEL_SO_v68 := $(DSP_DIR_v68)/libcdsp_peak_skel_v68.so
-DSP_SKEL_SO_v73 := $(DSP_DIR_v73)/libcdsp_peak_skel_v73.so
-DSP_SKEL_SOS := $(DSP_SKEL_SO_v68) $(DSP_SKEL_SO_v73)
-DSP_RUN_SKEL_SO_v68 := $(DSP_RUN_DIR)/libcdsp_peak_skel_v68.so
-DSP_RUN_SKEL_SO_v73 := $(DSP_RUN_DIR)/libcdsp_peak_skel_v73.so
-DSP_RUN_SKEL_SOS := $(DSP_RUN_SKEL_SO_v68) $(DSP_RUN_SKEL_SO_v73)
+DSP_SKEL_SOS := $(foreach arch,$(DSP_ARCHES),$(DSP_SKEL_SO_$(arch)))
+DSP_RUN_SKEL_SOS := $(foreach arch,$(DSP_ARCHES),$(DSP_RUN_SKEL_SO_$(arch)))
 
 SCENARIO ?= all
 THREADS ?=
@@ -73,22 +74,21 @@ ANDROID_LDLIBS := -l:$(ANDROID_FASTRPC_NAME) -llog -lm -ldl -lc
 
 DSP_CFLAGS_COMMON := -O3 -G0 -fPIC -Wall -Werror \
 	-I$(GEN_DIR) -I$(FASTRPC_INC) -I$(QAIC_INC) -I$(HEXAGON_INC)
-DSP_CFLAGS_v68 := $(DSP_CFLAGS_COMMON) -DCDSP_PEAK_ARCH=68 \
-	-mv68 -mcpu=hexagonv68 \
-	-mhvx=v68 -mhvx-ieee-fp
-DSP_CFLAGS_v73 := $(DSP_CFLAGS_COMMON) -DCDSP_PEAK_ARCH=73 \
-	-mv73 -mcpu=hexagonv73 \
-	-mhvx=v73 -mhvx-ieee-fp
-DSP_HMX_CFLAGS_v68 := $(DSP_CFLAGS_v68) -mhmx
-DSP_HMX_CFLAGS_v73 := $(DSP_CFLAGS_v73) -mhmx
 DSP_LDFLAGS_COMMON := -shared -G0 \
 	-Wl,-Bsymbolic \
 	-Wl,--wrap=malloc -Wl,--wrap=calloc -Wl,--wrap=free \
 	-Wl,--wrap=realloc -Wl,--wrap=memalign
-DSP_LDFLAGS_v68 := -mv68 -mcpu=hexagonv68 -mhvx=v68 -mhvx-ieee-fp \
-	$(DSP_LDFLAGS_COMMON) -Wl,-soname,libcdsp_peak_skel_v68.so
-DSP_LDFLAGS_v73 := -mv73 -mcpu=hexagonv73 -mhvx=v73 -mhvx-ieee-fp \
-	$(DSP_LDFLAGS_COMMON) -Wl,-soname,libcdsp_peak_skel_v73.so
+
+define DSP_FLAG_VARS
+DSP_CFLAGS_$(1) := $$(DSP_CFLAGS_COMMON) -DCDSP_PEAK_ARCH=$(patsubst v%,%,$(1)) \
+	-m$(1) -mcpu=hexagon$(1) \
+	-mhvx=$(1) -mhvx-ieee-fp
+DSP_HMX_CFLAGS_$(1) := $$(DSP_CFLAGS_$(1)) -mhmx
+DSP_LDFLAGS_$(1) := -m$(1) -mcpu=hexagon$(1) -mhvx=$(1) -mhvx-ieee-fp \
+	$$(DSP_LDFLAGS_COMMON) -Wl,-soname,libcdsp_peak_skel_$(1).so
+endef
+
+$(foreach arch,$(DSP_ARCHES),$(eval $(call DSP_FLAG_VARS,$(arch))))
 
 .PHONY: all qaic run install android android-prepare-sysroot \
 	android-fetch-sysroot android-install android-push android-run clean inspect FORCE
@@ -111,7 +111,7 @@ $(GEN_DIR)/cdsp_peak_skel_%.c: $(GEN_STAMP) $(GEN_DIR)/cdsp_peak_skel.c
 		-e 's#cdsp_peak_skel_handle_invoke_uri\[[0-9][0-9]*+1\]#cdsp_peak_skel_handle_invoke_uri[]#' \
 		$(GEN_DIR)/cdsp_peak_skel.c > $@
 
-$(HOST_DIR) $(ANDROID_DIR) $(DSP_RUN_DIR) $(DSP_DIR_v68) $(DSP_DIR_v73):
+$(HOST_DIR) $(ANDROID_DIR) $(DSP_RUN_DIR) $(foreach arch,$(DSP_ARCHES),$(DSP_DIR_$(arch))):
 	mkdir -p $@
 
 $(HOST_DIR)/cdsp_peak_stub.o: $(GEN_STAMP) $(GEN_DIR)/cdsp_peak_stub.c | $(HOST_DIR)
