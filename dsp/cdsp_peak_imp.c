@@ -10,7 +10,9 @@
 #include "AEEStdErr.h"
 #include "cdsp_peak.h"
 
-#define CDSP_PEAK_ARCH 68
+#ifndef CDSP_PEAK_ARCH
+#error "CDSP_PEAK_ARCH must be defined by the DSP build flags"
+#endif
 #define CDSP_PEAK_KERNEL_FP32 0
 #define CDSP_PEAK_KERNEL_FP16 1
 #define CDSP_PEAK_KERNEL_INT8_FIXED 2

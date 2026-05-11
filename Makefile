@@ -43,9 +43,11 @@ HOST_LDFLAGS := --target=aarch64-linux-gnu -pthread
 
 DSP_CFLAGS_COMMON := -O3 -G0 -fPIC -Wall -Werror \
 	-I$(GEN_DIR) -I$(FASTRPC_INC) -I$(QAIC_INC) -I$(HEXAGON_INC)
-DSP_CFLAGS_v68 := $(DSP_CFLAGS_COMMON) -mv68 -mcpu=hexagonv68 \
+DSP_CFLAGS_v68 := $(DSP_CFLAGS_COMMON) -DCDSP_PEAK_ARCH=68 \
+	-mv68 -mcpu=hexagonv68 \
 	-mhvx=v68 -mhvx-ieee-fp
-DSP_CFLAGS_v73 := $(DSP_CFLAGS_COMMON) -mv73 -mcpu=hexagonv73 \
+DSP_CFLAGS_v73 := $(DSP_CFLAGS_COMMON) -DCDSP_PEAK_ARCH=73 \
+	-mv73 -mcpu=hexagonv73 \
 	-mhvx=v73 -mhvx-ieee-fp
 DSP_HMX_CFLAGS_v68 := $(DSP_CFLAGS_v68) -mhmx
 DSP_HMX_CFLAGS_v73 := $(DSP_CFLAGS_v73) -mhmx
