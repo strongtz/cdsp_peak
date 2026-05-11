@@ -1,0 +1,40 @@
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = ComputeAccelerator
+ClassGuid   = {F01A9D53-3FF6-48D2-9F97-C8A7004BE10C}
+Provider    = %CDSPPEAK%
+DriverVer   = 05/11/2026,1.0.0.0
+CatalogFile = cdsp_peak_skel.cat
+PnpLockDown = 1
+
+[DestinationDirs]
+Drivers_Dir = 13
+
+[SourceDisksNames]
+1 = %DiskId%
+
+[SourceDisksFiles]
+libcdsp_peak_skel_v68.so = 1
+libcdsp_peak_skel_v69.so = 1
+libcdsp_peak_skel_v73.so = 1
+libcdsp_peak_skel_v75.so = 1
+libcdsp_peak_skel_v79.so = 1
+libcdsp_peak_skel_v81.so = 1
+
+[ControlFlags]
+ExcludeFromSelect = *
+
+[DefaultInstall.NTarm64]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+libcdsp_peak_skel_v68.so,,,0x10 ;COPYFLG_NO_OVERWRITE
+libcdsp_peak_skel_v69.so,,,0x10 ;COPYFLG_NO_OVERWRITE
+libcdsp_peak_skel_v73.so,,,0x10 ;COPYFLG_NO_OVERWRITE
+libcdsp_peak_skel_v75.so,,,0x10 ;COPYFLG_NO_OVERWRITE
+libcdsp_peak_skel_v79.so,,,0x10 ;COPYFLG_NO_OVERWRITE
+libcdsp_peak_skel_v81.so,,,0x10 ;COPYFLG_NO_OVERWRITE
+
+[Strings]
+CDSPPEAK = "cdsp_peak"
+DiskId   = "cdsp_peak HTP libraries"

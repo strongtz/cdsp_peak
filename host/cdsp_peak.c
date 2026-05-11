@@ -1342,7 +1342,14 @@ int main(int argc, char **argv)
    for (int i = 0; i < opt.threads; ++i) {
       err = cdsp_peak_open(uri, &handles[i]);
       if (err) {
-         fprintf(stderr, "cdsp_peak_open thread %d failed: 0x%x\n", i, err);
+         fprintf(stderr, "cdsp_peak_open thread %d failed: 0x%x (uri=%s)\n",
+                 i, err, uri);
+#ifdef _WIN32
+         if (err == AEE_EUNABLETOLOAD || (uint32_t)err == 0x80000406u)
+            fprintf(stderr,
+                    "on Windows this usually means the DSP skel was not found "
+                    "or its catalog signature was not accepted\n");
+#endif
          goto out;
       }
    }

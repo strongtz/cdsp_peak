@@ -80,6 +80,56 @@ make -C cdsp_peak \
 make -C cdsp_peak
 ```
 
+## Windows ARM64 / Windows on Snapdragon
+
+The original `Makefile` is still the Linux/Android path. On native Windows
+ARM64, use the CMake path instead; it follows the llama.cpp Snapdragon backend
+model:
+
+- host code is built with Visual Studio/LLVM `clang-cl` for Windows ARM64;
+- QAIC is the Hexagon SDK `ipc/fastrpc/qaic/WinNT/qaic.exe` and uses `-mdll`;
+- `libcdsprpc.dll` is loaded at runtime from the Qualcomm driver package, not
+  linked from the SDK;
+- Hexagon skels remain DSP-side ELF `.so` files and are copied beside
+  `cdsp_peak.exe`.
+
+With Hexagon SDK installed at `C:\Qualcomm\Hexagon_SDK\6.5.0.1`:
+
+```powershell
+cd C:\data\cdsp_peak
+.\scripts\build_windows.ps1
+```
+
+The direct command sequence is:
+
+```powershell
+$cmd = 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat" arm64 && "C:\Qualcomm\Hexagon_SDK\6.5.0.1\tools\cmake-3.28.3-windows-arm64\bin\cmake.exe" -S . -B build-windows -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/ARM64/bin/clang-cl.exe" -DCDSP_PEAK_SDK_ROOT="C:/Qualcomm/Hexagon_SDK/6.5.0.1" -DHEXAGON_TOOLS_ROOT="C:/Qualcomm/Hexagon_SDK/6.5.0.1/tools/HEXAGON_Tools/19.0.07" && "C:\Qualcomm\Hexagon_SDK\6.5.0.1\tools\cmake-3.28.3-windows-arm64\bin\cmake.exe" --build build-windows -j 4'
+cmd.exe /d /s /c $cmd
+```
+
+Run a small probe from the build directory:
+
+```powershell
+.\build-windows\cdsp_peak.exe --scenario rpc-null --min-ms 1 --power none --unsigned-pd optional
+```
+
+If `remote_handle_open` fails with `0x80000406`, the host executable compiled
+and reached the Windows FastRPC driver, but the DSP skel was not loadable. On
+Windows this commonly means the `.so` files need a signed catalog accepted by
+the NPU driver. Create/import a test-signing certificate as described in
+llama.cpp `docs/backend/snapdragon/windows.md`, install the Windows Driver Kit
+so `inf2cat.exe` is available, set `HEXAGON_HTP_CERT` to the `.pfx`, enable
+Windows test-signing if needed, then rebuild:
+
+```powershell
+$env:HEXAGON_HTP_CERT="C:\Users\you\Certs\ggml-htp-v1.pfx"
+$env:HEXAGON_HTP_CERT_PASSWORD="optional-pfx-password"
+.\scripts\build_windows.ps1
+```
+
+The signed build emits `cdsp_peak_skel.cat` beside `cdsp_peak.exe` and the
+`libcdsp_peak_skel_v*.so` files.
+
 Install the runnable files into one directory:
 
 ```sh
