@@ -10,6 +10,7 @@ HEXAGON_INC ?= $(HEXAGON_TOOLS_ROOT)/Tools/target/hexagon/include
 GEN_DIR := build/gen
 HOST_DIR := build/host
 DSP_DIR := build/dsp/v68
+INSTALL_DIR ?= $(abspath install)
 
 IDL := idl/cdsp_peak.idl
 GEN_STAMP := $(GEN_DIR)/.qaic.stamp
@@ -38,7 +39,7 @@ DSP_LDFLAGS := -shared -G0 -mv68 -mcpu=hexagonv68 -mhvx=v68 -mhvx-ieee-fp \
 	-Wl,--wrap=realloc -Wl,--wrap=memalign \
 	-Wl,-soname,libcdsp_peak_skel.so
 
-.PHONY: all qaic run clean inspect
+.PHONY: all qaic run install clean inspect
 
 all: $(HOST_TEST) $(DSP_SKEL_SO)
 
@@ -85,6 +86,12 @@ run: all
 	ADSP_LIBRARY_PATH=$(abspath $(DSP_DIR)) \
 	DSP_LIBRARY_PATH=$(abspath $(DSP_DIR)) \
 	$(HOST_TEST) --scenario $(SCENARIO) $(THREAD_ARGS) $(RUN_ARGS)
+
+install: all
+	install -d $(INSTALL_DIR)
+	install -m 0755 $(HOST_TEST) $(INSTALL_DIR)/cdsp_peak
+	install -m 0755 $(HOST_STUB_SO) $(INSTALL_DIR)/libcdsp_peak_stub.so
+	install -m 0755 $(DSP_SKEL_SO) $(INSTALL_DIR)/libcdsp_peak_skel.so
 
 inspect: $(DSP_SKEL_SO)
 	$(HEXAGON_TOOLS_ROOT)/Tools/bin/hexagon-llvm-readelf -h -d $(DSP_SKEL_SO)

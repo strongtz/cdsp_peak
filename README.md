@@ -60,13 +60,18 @@ make -C cdsp_peak \
 make -C cdsp_peak
 ```
 
-Run all scenarios:
+Install the runnable files into one directory:
 
 ```sh
-LD_LIBRARY_PATH="$PWD/cdsp_peak/build/host" \
-ADSP_LIBRARY_PATH="$PWD/cdsp_peak/build/dsp/v68" \
-DSP_LIBRARY_PATH="$PWD/cdsp_peak/build/dsp/v68" \
-./cdsp_peak/build/host/cdsp_peak --scenario all
+make -C cdsp_peak install
+./cdsp_peak/install/cdsp_peak --scenario all
+```
+
+The install directory can be overridden:
+
+```sh
+make -C cdsp_peak install INSTALL_DIR=/tmp/cdsp_peak
+/tmp/cdsp_peak/cdsp_peak --scenario all
 ```
 
 The `run` target accepts make/environment variables:
@@ -91,8 +96,13 @@ timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-full-x64 --m
 ./cdsp_peak/build/host/cdsp_peak --reset
 ```
 
+`make install` copies `cdsp_peak`, `libcdsp_peak_stub.so`, and
+`libcdsp_peak_skel.so` into `INSTALL_DIR`. The executable has `$ORIGIN` rpath
+for the host stub, and at startup it prepends its own directory to
+`ADSP_LIBRARY_PATH` and `DSP_LIBRARY_PATH` for DSP-side library lookup.
+
 `make clean` removes generated QAIC sources, objects, binaries, and DSP shared
-objects under `build/`.
+objects under `build/`. It does not remove `INSTALL_DIR`.
 
 ## Notes
 

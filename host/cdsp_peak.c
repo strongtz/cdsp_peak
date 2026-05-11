@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -52,6 +53,10 @@
 #define MAX_COMPUTE_ITERATIONS 0x30000000
 #define MAX_HMX_REPEATS 0x1000000
 #define MAX_THREADS 256
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 struct options {
    int domain;
@@ -237,6 +242,92 @@ static int make_uri(int domain, char **uri)
 
    snprintf(*uri, len, "%s%s", base, suffix);
    return 0;
+}
+
+static int executable_dir(char *dir, size_t dir_size)
+{
+   ssize_t len;
+   char *slash;
+
+   if (!dir || dir_size == 0)
+      return -EINVAL;
+
+   len = readlink("/proc/self/exe", dir, dir_size - 1);
+   if (len < 0)
+      return -errno;
+   if (len == 0 || (size_t)len >= dir_size - 1)
+      return -ENAMETOOLONG;
+   dir[len] = '\0';
+
+   slash = strrchr(dir, '/');
+   if (!slash)
+      return -EINVAL;
+   if (slash == dir)
+      slash[1] = '\0';
+   else
+      *slash = '\0';
+
+   return 0;
+}
+
+static bool env_path_contains(const char *paths, const char *dir)
+{
+   size_t dir_len = strlen(dir);
+   const char *component = paths;
+
+   while (component && *component) {
+      const char *colon = strchr(component, ':');
+      size_t len = colon ? (size_t)(colon - component) : strlen(component);
+
+      if (len == dir_len && !strncmp(component, dir, len))
+         return true;
+      if (!colon)
+         break;
+      component = colon + 1;
+   }
+
+   return false;
+}
+
+static void prepend_env_path(const char *name, const char *dir)
+{
+   const char *old = getenv(name);
+   char *value;
+   size_t dir_len;
+   size_t old_len;
+
+   if (!dir || !dir[0])
+      return;
+   if (old && env_path_contains(old, dir))
+      return;
+
+   dir_len = strlen(dir);
+   old_len = old && old[0] ? strlen(old) : 0;
+   value = (char *)malloc(dir_len + (old_len ? old_len + 1 : 0) + 1);
+   if (!value)
+      return;
+
+   memcpy(value, dir, dir_len);
+   if (old_len) {
+      value[dir_len] = ':';
+      memcpy(value + dir_len + 1, old, old_len + 1);
+   } else {
+      value[dir_len] = '\0';
+   }
+
+   (void)setenv(name, value, 1);
+   free(value);
+}
+
+static void add_executable_dir_to_dsp_paths(void)
+{
+   char dir[PATH_MAX];
+
+   if (executable_dir(dir, sizeof(dir)))
+      return;
+
+   prepend_env_path("ADSP_LIBRARY_PATH", dir);
+   prepend_env_path("DSP_LIBRARY_PATH", dir);
 }
 
 static int enable_unsigned_pd(int domain, int enable)
@@ -1018,6 +1109,7 @@ int main(int argc, char **argv)
    parse_options(argc, argv, &opt);
    need_mem = any_mem_scenario_enabled(&opt);
    need_hmx = any_hmx_scenario_enabled(&opt);
+   add_executable_dir_to_dsp_paths();
 
    bytes = opt.size_mib * 1024u * 1024u;
    bytes &= ~(size_t)127u;
