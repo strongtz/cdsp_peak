@@ -1,6 +1,6 @@
 # cdsp_peak
 
-Small FastRPC/QAIC benchmark for Hexagon v68 CDSP.
+Small FastRPC/QAIC benchmark for Hexagon v68/v73 CDSP.
 
 This project is intentionally small and local-machine oriented. It assumes the
 FastRPC runtime, DSP firmware, and CDSP dynamic libraries are already installed
@@ -97,18 +97,23 @@ timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-full-x64 --m
 ```
 
 `make install` copies `cdsp_peak`, `libcdsp_peak_stub.so`, and
-`libcdsp_peak_skel.so` into `INSTALL_DIR`. The executable has `$ORIGIN` rpath
-for the host stub, and at startup it prepends its own directory to
-`ADSP_LIBRARY_PATH` and `DSP_LIBRARY_PATH` for DSP-side library lookup.
+`libcdsp_peak_skel_v68.so`/`libcdsp_peak_skel_v73.so` into `INSTALL_DIR`. The
+executable has `$ORIGIN` rpath for the host stub, and at startup it sets
+`ADSP_LIBRARY_PATH` and `DSP_LIBRARY_PATH` to its own directory when skel
+libraries are installed beside the executable. This avoids FastRPC multi-path
+lookup quirks.
 
 `make clean` removes generated QAIC sources, objects, binaries, and DSP shared
 objects under `build/`. It does not remove `INSTALL_DIR`.
 
 ## Notes
 
-The first version is intentionally v68-only. `mem-copy` reports touched bytes
-as read plus written bytes, so its GB/s number is twice the copied payload size.
-When `--threads` is omitted, `cdsp_peak` uses the FastRPC-reported
+The build emits both v68 and v73 DSP skel libraries. At startup, the host uses
+`DSPRPC_GET_DSP_INFO`/`ARCH_VER` to select `libcdsp_peak_skel_v68.so` or
+`libcdsp_peak_skel_v73.so`; the current benchmark scenarios remain v68-era
+probes and no v73-specific test rows are added yet. `mem-copy` reports touched
+bytes as read plus written bytes, so its GB/s number is twice the copied
+payload size. When `--threads` is omitted, `cdsp_peak` uses the FastRPC-reported
 `HVX_SUPPORT_128B` count as the default thread count. `--threads` opens one
 FastRPC handle per host thread and gives each memory thread its own
 `--size-mib` source and destination buffers. The `count` column is total calls
@@ -157,6 +162,7 @@ observed runtime clock rather than an obviously missing packet pattern.
 The currently generated HMX instruction packets can be inspected with:
 
 ```sh
+make -C cdsp_peak inspect INSPECT_ARCH=v68
 ../Hexagon_open_access.Core.19.0.02.Linux-ARM64/Tools/bin/hexagon-llvm-objdump \
   -d --mcpu=hexagonv68 --mattr=+hmx,+hmxv68 \
   cdsp_peak/build/dsp/v68/cdsp_peak_hmx.o

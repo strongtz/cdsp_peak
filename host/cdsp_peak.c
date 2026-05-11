@@ -47,6 +47,10 @@
 #define POWER_STEP_HMX 4
 #define POWER_STEP_HMX_V2 5
 
+#define CDSP_PEAK_SKEL_URI_FORMAT \
+   "file:///libcdsp_peak_skel_%s.so?cdsp_peak_skel_handle_invoke" \
+   "&_modver=1.0&_idlver=0.1.0"
+
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define ITERATION_GROUP_NONE 0
 #define ITERATION_GROUP_INT8 1
@@ -226,21 +230,48 @@ static const char *power_step_name(int step)
    }
 }
 
-static int make_uri(int domain, char **uri)
+static uint32_t normalize_hexagon_arch(uint32_t arch)
+{
+   uint32_t low = arch & 0xffu;
+
+   if (arch >= 60 && arch <= 99)
+      return arch;
+   if (low >= 0x60 && low <= 0x99)
+      return ((low >> 4) * 10u) + (low & 0xfu);
+   return arch;
+}
+
+static const char *skel_arch_suffix(uint32_t arch)
+{
+   if (normalize_hexagon_arch(arch) >= 73)
+      return "v73";
+   return "v68";
+}
+
+static int make_uri(int domain, uint32_t arch, char **uri)
 {
    const char *base = getenv("CDSP_PEAK_URI");
    const char *suffix = domain_suffix(domain);
+   const char *arch_suffix = skel_arch_suffix(arch);
    size_t len;
 
-   if (!base)
-      base = cdsp_peak_URI;
+   if (base) {
+      len = strlen(base) + strlen(suffix) + 1;
+      *uri = (char *)malloc(len);
+      if (!*uri)
+         return -ENOMEM;
+      snprintf(*uri, len, "%s%s", base, suffix);
+      return 0;
+   }
 
-   len = strlen(base) + strlen(suffix) + 1;
+   len = (size_t)snprintf(NULL, 0, CDSP_PEAK_SKEL_URI_FORMAT "%s",
+                          arch_suffix, suffix) +
+         1u;
    *uri = (char *)malloc(len);
    if (!*uri)
       return -ENOMEM;
 
-   snprintf(*uri, len, "%s%s", base, suffix);
+   snprintf(*uri, len, CDSP_PEAK_SKEL_URI_FORMAT "%s", arch_suffix, suffix);
    return 0;
 }
 
@@ -270,53 +301,27 @@ static int executable_dir(char *dir, size_t dir_size)
    return 0;
 }
 
-static bool env_path_contains(const char *paths, const char *dir)
+static bool executable_dir_has_skel(const char *dir)
 {
-   size_t dir_len = strlen(dir);
-   const char *component = paths;
+   char path[PATH_MAX];
+   int needed;
 
-   while (component && *component) {
-      const char *colon = strchr(component, ':');
-      size_t len = colon ? (size_t)(colon - component) : strlen(component);
+   needed = snprintf(path, sizeof(path), "%s/libcdsp_peak_skel_v68.so", dir);
+   if (needed > 0 && (size_t)needed < sizeof(path) && access(path, R_OK) == 0)
+      return true;
 
-      if (len == dir_len && !strncmp(component, dir, len))
-         return true;
-      if (!colon)
-         break;
-      component = colon + 1;
-   }
+   needed = snprintf(path, sizeof(path), "%s/libcdsp_peak_skel_v73.so", dir);
+   if (needed > 0 && (size_t)needed < sizeof(path) && access(path, R_OK) == 0)
+      return true;
 
    return false;
 }
 
-static void prepend_env_path(const char *name, const char *dir)
+static void set_env_path(const char *name, const char *dir)
 {
-   const char *old = getenv(name);
-   char *value;
-   size_t dir_len;
-   size_t old_len;
-
    if (!dir || !dir[0])
       return;
-   if (old && env_path_contains(old, dir))
-      return;
-
-   dir_len = strlen(dir);
-   old_len = old && old[0] ? strlen(old) : 0;
-   value = (char *)malloc(dir_len + (old_len ? old_len + 1 : 0) + 1);
-   if (!value)
-      return;
-
-   memcpy(value, dir, dir_len);
-   if (old_len) {
-      value[dir_len] = ':';
-      memcpy(value + dir_len + 1, old, old_len + 1);
-   } else {
-      value[dir_len] = '\0';
-   }
-
-   (void)setenv(name, value, 1);
-   free(value);
+   (void)setenv(name, dir, 1);
 }
 
 static void add_executable_dir_to_dsp_paths(void)
@@ -325,9 +330,11 @@ static void add_executable_dir_to_dsp_paths(void)
 
    if (executable_dir(dir, sizeof(dir)))
       return;
+   if (!executable_dir_has_skel(dir))
+      return;
 
-   prepend_env_path("ADSP_LIBRARY_PATH", dir);
-   prepend_env_path("DSP_LIBRARY_PATH", dir);
+   set_env_path("ADSP_LIBRARY_PATH", dir);
+   set_env_path("DSP_LIBRARY_PATH", dir);
 }
 
 static int enable_unsigned_pd(int domain, int enable)
@@ -1088,6 +1095,7 @@ int main(int argc, char **argv)
    int err = 0;
    int arch = 0;
    int hvx_bytes = 0;
+   uint32_t arch_capability = 68;
    uint64_t timer_overhead = 0;
    uint64_t current_cycles = 0;
    uint32_t hvx_64b = 0;
@@ -1128,11 +1136,12 @@ int main(int argc, char **argv)
       }
    }
 
+   (void)query_dsp_capability(opt.domain, ARCH_VER, &arch_capability);
    (void)query_dsp_capability(opt.domain, HVX_SUPPORT_64B, &hvx_64b);
    (void)query_dsp_capability(opt.domain, HVX_SUPPORT_128B, &hvx_128b);
    resolve_thread_count(&opt, hvx_64b, hvx_128b);
 
-   err = make_uri(opt.domain, &uri);
+   err = make_uri(opt.domain, arch_capability, &uri);
    if (err) {
       fprintf(stderr, "make_uri failed: %d\n", err);
       return 1;
@@ -1169,15 +1178,15 @@ int main(int argc, char **argv)
    (void)query_dsp_capability(opt.domain, HMX_SUPPORT_DEPTH, &hmx_depth);
    (void)query_dsp_capability(opt.domain, HMX_SUPPORT_SPATIAL, &hmx_spatial);
 
-   printf("cdsp_peak domain=%s arch=v%d hvx=%dB hvx64=%u hvx128=%u"
+   printf("cdsp_peak domain=%s arch=v%d skel=%s hvx=%dB hvx64=%u hvx128=%u"
           " timer_overhead=%" PRIu64
           " cycles threads=%d buffer=%zu MiB/thread vtcm_page=%u"
           " vtcm_count=%u hmx_depth=%u hmx_spatial=%u power=%s"
           " power_mask=0x%x\n",
-          domain_name(opt.domain), arch, hvx_bytes, hvx_64b, hvx_128b,
-          timer_overhead, opt.threads, bytes / (1024u * 1024u), vtcm_page,
-          vtcm_count, hmx_depth, hmx_spatial, power_mode_name(opt.power_mode),
-          power_applied_mask);
+          domain_name(opt.domain), arch, skel_arch_suffix(arch_capability),
+          hvx_bytes, hvx_64b, hvx_128b, timer_overhead, opt.threads,
+          bytes / (1024u * 1024u), vtcm_page, vtcm_count, hmx_depth,
+          hmx_spatial, power_mode_name(opt.power_mode), power_applied_mask);
 
    if (need_mem) {
       srcs = (uint8_t **)calloc((size_t)opt.threads, sizeof(*srcs));
