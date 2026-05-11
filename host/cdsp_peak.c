@@ -49,6 +49,10 @@
 #define POWER_NONE 0
 #define POWER_MAX 1
 
+#define UNSIGNED_PD_OFF 0
+#define UNSIGNED_PD_REQUIRED 1
+#define UNSIGNED_PD_OPTIONAL 2
+
 #define POWER_STEP_APPTYPE 1
 #define POWER_STEP_DCVS_MAX 2
 #define POWER_STEP_HVX 3
@@ -454,7 +458,8 @@ static void usage(const char *prog)
 {
    printf("Usage: %s [--scenario all|name[,name...]] [--size-mib N] [--min-ms N]\n"
           "          [--iterations N] [--threads N]\n"
-          "          [--domain N] [--unsigned-pd 0|1] [--power none|max]\n"
+          "          [--domain N] [--unsigned-pd 0|1|optional]"
+          " [--power none|max]\n"
           "          [--reset]\n\n"
           "Scenarios: rpc-null, fp32-vmuladd, fp16-vmpyacc,\n"
           "           qf16-vmpyadd, qf32-vmpyadd,\n"
@@ -484,6 +489,21 @@ static int parse_int_arg(const char *value, const char *name)
    return (int)parsed;
 }
 
+static int parse_unsigned_pd_arg(const char *value)
+{
+   if (!strcmp(value, "0") || !strcmp(value, "off") ||
+       !strcmp(value, "none"))
+      return UNSIGNED_PD_OFF;
+   if (!strcmp(value, "1") || !strcmp(value, "on") ||
+       !strcmp(value, "required"))
+      return UNSIGNED_PD_REQUIRED;
+   if (!strcmp(value, "optional") || !strcmp(value, "auto"))
+      return UNSIGNED_PD_OPTIONAL;
+
+   fprintf(stderr, "invalid --unsigned-pd: %s\n", value);
+   exit(2);
+}
+
 static int parse_power_arg(const char *value)
 {
    if (!strcmp(value, "none") || !strcmp(value, "off") || !strcmp(value, "0"))
@@ -510,7 +530,7 @@ static size_t parse_size_arg(const char *value, const char *name)
 static void parse_options(int argc, char **argv, struct options *opt)
 {
    opt->domain = CDSP_DOMAIN_ID;
-   opt->unsigned_pd = 1;
+   opt->unsigned_pd = UNSIGNED_PD_REQUIRED;
    opt->reset = 0;
    opt->min_ms = 300;
    opt->iterations = 0;
@@ -535,7 +555,7 @@ static void parse_options(int argc, char **argv, struct options *opt)
       } else if (!strcmp(argv[i], "--domain") && i + 1 < argc) {
          opt->domain = parse_int_arg(argv[++i], "--domain");
       } else if (!strcmp(argv[i], "--unsigned-pd") && i + 1 < argc) {
-         opt->unsigned_pd = parse_int_arg(argv[++i], "--unsigned-pd");
+         opt->unsigned_pd = parse_unsigned_pd_arg(argv[++i]);
       } else if (!strcmp(argv[i], "--power") && i + 1 < argc) {
          opt->power_mode = parse_power_arg(argv[++i]);
       } else if (!strcmp(argv[i], "--reset")) {
@@ -1211,6 +1231,7 @@ int main(int argc, char **argv)
    uint64_t current_cycles = 0;
    uint32_t hvx_64b = 0;
    uint32_t hvx_128b = 0;
+   uint32_t unsigned_pd_support = UINT32_MAX;
    uint32_t vtcm_page = 0;
    uint32_t vtcm_count = 0;
    uint32_t hmx_depth = 0;
@@ -1239,11 +1260,31 @@ int main(int argc, char **argv)
 
    reset_domain_if_requested(opt.domain, opt.reset);
 
-   if (opt.unsigned_pd) {
+   (void)query_dsp_capability(opt.domain, UNSIGNED_PD_SUPPORT,
+                              &unsigned_pd_support);
+
+   if (opt.unsigned_pd != UNSIGNED_PD_OFF) {
       err = enable_unsigned_pd(opt.domain, 1);
       if (err) {
-         fprintf(stderr, "unsigned PD enable failed: 0x%x\n", err);
-         return 1;
+         if (opt.unsigned_pd == UNSIGNED_PD_REQUIRED) {
+            if (unsigned_pd_support != UINT32_MAX)
+               fprintf(stderr,
+                       "unsigned PD enable failed: 0x%x"
+                       " (UNSIGNED_PD_SUPPORT=%u)\n",
+                       err, unsigned_pd_support);
+            else
+               fprintf(stderr, "unsigned PD enable failed: 0x%x\n", err);
+            return 1;
+         }
+         if (unsigned_pd_support != UINT32_MAX)
+            fprintf(stderr,
+                    "warning: unsigned PD enable failed: 0x%x"
+                    " (UNSIGNED_PD_SUPPORT=%u); continuing\n",
+                    err, unsigned_pd_support);
+         else
+            fprintf(stderr,
+                    "warning: unsigned PD enable failed: 0x%x; continuing\n",
+                    err);
       }
    }
 

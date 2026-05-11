@@ -53,9 +53,17 @@ Required host pieces:
 - LLVM/clang for the AArch64 host build.
 - Hexagon Open Access tools for `hexagon-clang` and Hexagon target headers.
 - `libbsd` for the generated QAIC host stub link.
+- Optional Android push/run targets require `adb` and an arm64 Android device
+  whose shell user can use FastRPC/CDSP.
 
 The build does not require Hexagon SDK headers. The small subset of
 `HAP_power_set` ABI declarations used for power voting lives in this tree.
+The Android build targets do not require the Android NDK; they use clang's
+`aarch64-linux-android` target plus a small local bionic entry point. By
+default they generate local bionic linker stubs and copy the Hexagon SDK
+Android `libcdsprpc.so` into `build/android/sysroot`; no root access is needed
+for the build. Runtime access still depends on Android device permissions and
+SELinux policy.
 
 The Makefile variables can be overridden if your tree differs:
 
@@ -85,6 +93,46 @@ The install directory can be overridden:
 make -C cdsp_peak install INSTALL_DIR=/tmp/cdsp_peak
 /tmp/cdsp_peak/cdsp_peak --scenario all
 ```
+
+Build and push an Android shell runnable package:
+
+```sh
+make -C cdsp_peak android-prepare-sysroot
+make -C cdsp_peak android-install
+make -C cdsp_peak android-push
+make -C cdsp_peak android-run RUN_ARGS="--iterations 1 --size-mib 1"
+```
+
+`android-prepare-sysroot` does not contact the device. It creates small local
+link-time stubs for `libc.so`, `libdl.so`, `libm.so`, `liblog.so`, and
+`ANDROID_FASTRPC_NAME`. The FastRPC stub is only for linking; by default it is
+not installed or pushed, so the binary uses the device's real
+`/vendor/lib64/libcdsprpc.so` at runtime. `android-install` then places
+`cdsp_peak`, `libcdsp_peak_stub.so`, `libcdsp_peak_skel_v68.so`, and
+`libcdsp_peak_skel_v73.so` in `build/android/install`.
+`android-push` copies that directory to `/data/local/tmp/cdsp_peak` by default.
+`android-run` uses `--unsigned-pd optional` by default: it tries to enable
+unsigned PD and continues to `remote_handle_open` if the control call is not
+supported by that device. Override `ADB=...`, `ANDROID_API=...`,
+`ANDROID_FASTRPC_NAME=...`, `ANDROID_UNSIGNED_PD=0|1|optional`, or
+`ANDROID_PUSH_DIR=...` if needed. If the Android dynamic linker cannot see the
+device FastRPC library, provide a real device library and explicitly bundle it:
+
+```sh
+adb pull /vendor/lib64/libcdsprpc.so /tmp/libcdsprpc.so
+make -C cdsp_peak android-run \
+  ANDROID_FASTRPC_LIB=/tmp/libcdsprpc.so \
+  ANDROID_BUNDLE_FASTRPC=1 \
+  RUN_ARGS="--iterations 1 --size-mib 1"
+```
+
+Do not bundle the small Hexagon SDK Android FastRPC library unless you have
+confirmed it is a real implementation on your SDK version; some SDK packages
+ship a stub that returns failure from the FastRPC entry points.
+
+`make android-fetch-sysroot` is also available as an explicit device-pull
+variant, but it may require root or permissive SELinux rules on production
+devices and is not used by the default Android build.
 
 The `run` target accepts make/environment variables:
 
