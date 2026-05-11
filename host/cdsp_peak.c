@@ -35,10 +35,13 @@
 #define HMX_INT8_UH2X2_FULL_X64 15
 #define HMX_INT8_UB_ADEEP32 16
 #define HMX_INT8_UB_WDEEP_FULL_X64 17
+#define HMX_FP16_HF_X64 18
+#define HMX_INT4_UB_WN2X_FULL_X64 19
 #define HMX_PROBE_RESOURCE 100
 #define HMX_PROBE_CACHED 101
 #define HMX_PROBE_LOCK 102
 #define HMX_TILE_U8_BYTES 1024
+#define HMX_TILE_U16_BYTES 2048
 #define HMX_DEEP_TILES 32
 #define HMX_OUTPUT_BYTES 2048
 #define HMX_OUTPUT_2X2_BYTES 8192
@@ -174,6 +177,12 @@ static const struct hmx_scenario hmx_scenarios[] = {
    {"hmx-int8-ub-wdeep-full-x64", HMX_INT8_UB_WDEEP_FULL_X64, "GIOPS",
     64.0 * 32.0 * 64.0 * 32.0 * 2.0, 1,
     HMX_TILE_U8_BYTES, 2 * HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
+   {"hmx-fp16-hf-x64", HMX_FP16_HF_X64, "GFLOPS",
+    64.0 * 32.0 * 32.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U16_BYTES, HMX_TILE_U16_BYTES, HMX_TILE_U16_BYTES, 1, 0},
+   {"hmx-int4-ub-wn2x-full-x64", HMX_INT4_UB_WN2X_FULL_X64, "GIOPS",
+    64.0 * 32.0 * 128.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 73},
 };
 
 static double now_ms(void)
@@ -456,7 +465,8 @@ static void usage(const char *prog)
           "           hmx-int8-ub-x16, hmx-int8-uh-x16,"
           " hmx-int8-ub-full-x16, hmx-int8-ub-full-x32,"
           " hmx-int8-ub-full-x64, hmx-int8-uh2x2-full-x64,\n"
-          "           hmx-int8-ub-adeep32, hmx-int8-ub-wdeep-full-x64\n"
+          "           hmx-int8-ub-adeep32, hmx-int8-ub-wdeep-full-x64,\n"
+          "           hmx-fp16-hf-x64, hmx-int4-ub-wn2x-full-x64\n"
           "Default thread count is HVX_SUPPORT_128B, falling back to 1.\n"
           "Default power mode is max: compute client, DCVS max, HVX on, HMX on.\n",
           prog);
@@ -599,7 +609,7 @@ static bool hmx_scenario_enabled(const struct options *opt,
 
 static void print_header(void)
 {
-   printf("%-22s %7s %12s %12s %14s %14s %12s %18s\n",
+   printf("%-30s %7s %12s %12s %14s %14s %12s %18s\n",
           "scenario", "threads", "count", "host_ms", "dsp_cycles", "ops/cycle",
           "score", "checksum");
 }
@@ -608,7 +618,7 @@ static void print_row(const char *scenario, int threads, uint64_t count,
                       double host_ms, uint64_t cycles, double ops_per_cycle,
                       double score, const char *unit, uint64_t checksum)
 {
-   printf("%-22s %7d %12" PRIu64 " %12.3f %14" PRIu64 " %14.3f %9.2f %-6s 0x%016" PRIx64 "\n",
+   printf("%-30s %7d %12" PRIu64 " %12.3f %14" PRIu64 " %14.3f %9.2f %-6s 0x%016" PRIx64 "\n",
           scenario, threads, count, host_ms, cycles, ops_per_cycle, score,
           unit, checksum);
 }
@@ -908,12 +918,25 @@ static int run_compute_group(const remote_handle64 *handles,
    return 0;
 }
 
-static void fill_hmx_inputs(uint8_t *activation, uint8_t *weight,
+static void fill_hmx_fp16_tile(uint8_t *data, size_t bytes)
+{
+   for (size_t i = 0; i + 1 < bytes; i += 2) {
+      data[i] = 0x00;
+      data[i + 1] = 0x3c;
+   }
+}
+
+static void fill_hmx_inputs(int mode, uint8_t *activation, uint8_t *weight,
                             uint8_t *output, size_t activation_bytes,
                             size_t weight_bytes, size_t output_bytes)
 {
-   memset(activation, 1, activation_bytes);
-   memset(weight, 1, weight_bytes);
+   if (mode == HMX_FP16_HF_X64) {
+      fill_hmx_fp16_tile(activation, activation_bytes);
+      fill_hmx_fp16_tile(weight, weight_bytes);
+   } else {
+      memset(activation, 1, activation_bytes);
+      memset(weight, 1, weight_bytes);
+   }
    memset(output, 0, output_bytes);
 }
 
@@ -927,8 +950,9 @@ static int run_hmx_int8(remote_handle64 handle, const struct options *opt,
    struct bench_result result = {0};
 
    for (;;) {
-      fill_hmx_inputs(activation, weight, output, scenario->activation_bytes,
-                      scenario->weight_bytes, scenario->output_bytes);
+      fill_hmx_inputs(scenario->mode, activation, weight, output,
+                      scenario->activation_bytes, scenario->weight_bytes,
+                      scenario->output_bytes);
 
       double start = now_ms();
       err = cdsp_peak_bench_hmx_int8(handle, activation,

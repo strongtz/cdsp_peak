@@ -27,6 +27,8 @@
 #define CDSP_PEAK_HMX_INT8_UH2X2_FULL_X64 15
 #define CDSP_PEAK_HMX_INT8_UB_ADEEP32 16
 #define CDSP_PEAK_HMX_INT8_UB_WDEEP_FULL_X64 17
+#define CDSP_PEAK_HMX_FP16_HF_X64 18
+#define CDSP_PEAK_HMX_INT4_UB_WN2X_FULL_X64 19
 #define CDSP_PEAK_HMX_PROBE_RESOURCE 100
 #define CDSP_PEAK_HMX_PROBE_CACHED 101
 #define CDSP_PEAK_HMX_PROBE_LOCK 102
@@ -339,6 +341,113 @@ hmx_int8_accumulate_ub_wdeep_x16(const uint8_t *activation,
    hmx_int8_accumulate_ub_wdeep(activation, weight);
 }
 
+static void hmx_init_fp16_scales(uint8_t *bias)
+{
+   memset(bias, 0, HMX_BIAS_BYTES);
+   for (int i = 0; i < 128; i += 4) {
+      bias[i] = 0x00;
+      bias[i + 1] = 0x3c;
+   }
+}
+
+static __attribute__((always_inline)) inline void
+hmx_fp16_accumulate_hf(const uint8_t *activation, const uint8_t *weight)
+{
+   const uint32_t limit = HMX_TILE_U16_BYTES - 1u;
+
+   Q6_activation_hf_mxmem_RR(hmx_addr(activation), limit);
+   Q6_weight_hf_mxmem_RR(hmx_addr(weight), limit);
+}
+
+static __attribute__((always_inline)) inline void
+hmx_fp16_accumulate_hf_x16(const uint8_t *activation, const uint8_t *weight)
+{
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+   hmx_fp16_accumulate_hf(activation, weight);
+}
+
+static __attribute__((noinline)) void
+hmx_fp16_tile_hf_x64(const uint8_t *activation, const uint8_t *weight,
+                     uint8_t *bias, uint8_t *output)
+{
+   Q6_bias_mxmem2_A((void *)bias);
+   Q6_mxclracc_hf();
+   hmx_fp16_accumulate_hf_x16(activation, weight);
+   hmx_fp16_accumulate_hf_x16(activation, weight);
+   hmx_fp16_accumulate_hf_x16(activation, weight);
+   hmx_fp16_accumulate_hf_x16(activation, weight);
+   Q6_mxmem_AR_after_hf(output, 0);
+}
+
+#if __HMX_ARCH__ >= 73
+static __attribute__((always_inline)) inline void
+hmx_int4_accumulate_ub_wn2x(const uint8_t *activation, const uint8_t *weight)
+{
+   const uint32_t activation_limit = HMX_TILE_U8_BYTES - 1u;
+   const uint32_t weight_limit = HMX_TILE_U8_BYTES - 1u;
+
+   Q6_activation_ub_mxmem_RR(hmx_addr(activation), activation_limit);
+   Q6_weight_n_mxmem_RR_2x(hmx_addr(weight), weight_limit);
+}
+
+static __attribute__((always_inline)) inline void
+hmx_int4_accumulate_ub_wn2x_x16(const uint8_t *activation,
+                                const uint8_t *weight)
+{
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+   hmx_int4_accumulate_ub_wn2x(activation, weight);
+}
+#endif
+
+static __attribute__((noinline)) int
+hmx_int4_tile_ub_wn2x_full_x64(const uint8_t *activation,
+                               const uint8_t *weight, uint8_t *output)
+{
+#if __HMX_ARCH__ >= 73
+   Q6_mxclracc();
+   hmx_int4_accumulate_ub_wn2x_x16(activation, weight);
+   hmx_int4_accumulate_ub_wn2x_x16(activation, weight);
+   hmx_int4_accumulate_ub_wn2x_x16(activation, weight);
+   hmx_int4_accumulate_ub_wn2x_x16(activation, weight);
+   Q6_mxmem_AR_before_retain_sat_ub(output, 0);
+   Q6_mxmem_AR_after_sat_ub(output + HMX_TILE_U8_BYTES, 0);
+   return AEE_SUCCESS;
+#else
+   (void)activation;
+   (void)weight;
+   (void)output;
+   return AEE_EUNSUPPORTED;
+#endif
+}
+
 static __attribute__((noinline)) void
 hmx_int8_tile_ub_adeep32(const uint8_t *activation, const uint8_t *weight,
                          uint8_t *output)
@@ -483,6 +592,8 @@ int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
    case CDSP_PEAK_HMX_INT8_UB_FULL_X32:
    case CDSP_PEAK_HMX_INT8_UB_FULL_X64:
    case CDSP_PEAK_HMX_INT8_UB_WDEEP_FULL_X64:
+   case CDSP_PEAK_HMX_INT4_UB_WN2X_FULL_X64:
+   case CDSP_PEAK_HMX_FP16_HF_X64:
       written_len = HMX_TILE_U16_BYTES;
       break;
    case CDSP_PEAK_HMX_INT8_UH2X2_FULL_X64:
@@ -513,6 +624,10 @@ int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
 
    if (mode == CDSP_PEAK_HMX_INT8_UB_WDEEP_FULL_X64)
       weight_vtcm_len = 2u * HMX_TILE_U8_BYTES;
+   else if (mode == CDSP_PEAK_HMX_FP16_HF_X64) {
+      activation_vtcm_len = HMX_TILE_U16_BYTES;
+      weight_vtcm_len = HMX_TILE_U16_BYTES;
+   }
 
    if (activationLen < (int)activation_vtcm_len ||
        weightLen < (int)weight_vtcm_len)
@@ -561,7 +676,10 @@ int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
    memcpy(vtcm_activation, activation, activation_vtcm_len);
    memcpy(vtcm_weight, weight, weight_vtcm_len);
    memcpy(vtcm_weight2, weight, HMX_TILE_U8_BYTES);
-   memset(vtcm_bias, 0, HMX_BIAS_BYTES);
+   if (mode == CDSP_PEAK_HMX_FP16_HF_X64)
+      hmx_init_fp16_scales(vtcm_bias);
+   else
+      memset(vtcm_bias, 0, HMX_BIAS_BYTES);
    memset(vtcm_output, 0, (size_t)written_len);
    memset(output, 0, (size_t)written_len);
 
@@ -602,6 +720,18 @@ int cdsp_peak_bench_hmx_int8(remote_handle64 handle,
       case CDSP_PEAK_HMX_INT8_UB_WDEEP_FULL_X64:
          hmx_int8_tile_ub_wdeep_full_x64(vtcm_activation, vtcm_weight,
                                          vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_FP16_HF_X64:
+         hmx_fp16_tile_hf_x64(vtcm_activation, vtcm_weight, vtcm_bias,
+                              vtcm_output);
+         break;
+      case CDSP_PEAK_HMX_INT4_UB_WN2X_FULL_X64:
+         err = hmx_int4_tile_ub_wn2x_full_x64(vtcm_activation, vtcm_weight,
+                                              vtcm_output);
+         if (err) {
+            hmx_resource_release(&resource);
+            return err;
+         }
          break;
       case CDSP_PEAK_HMX_INT8_UH2X2_FULL_X64:
          err = hmx_int8_tile_uh2x2_full_x64(vtcm_activation, vtcm_weight,

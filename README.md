@@ -26,6 +26,12 @@ It measures a narrow first set of synthetic limits:
 - `hmx-int8-ub-adeep32`, `hmx-int8-ub-wdeep-full-x64`: experimental probes for
   PRM-style activation deep and weight deep HMX multiply variants, included in
   the default `all` scenario.
+- `hmx-fp16-hf-x64`: experimental HMX FP16 tile probe using the same
+  `activation.hf`/`weight.hf` issue pattern as llama.cpp, with HMX output scale
+  set to 1.0.
+- `hmx-int4-ub-wn2x-full-x64`: experimental v73+ HMX probe for
+  `activation.ub` with `weight.n:2x`. It is included in `all` only when the
+  detected DSP architecture is v73 or newer.
 
 ## Requirements
 
@@ -100,6 +106,7 @@ timeout 10s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-cm-ub --iterati
 timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-full-x64 --min-ms 300 --size-mib 1
 timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-uh2x2-full-x64 --min-ms 300 --size-mib 1
 timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-adeep32,hmx-int8-ub-wdeep-full-x64 --min-ms 300 --size-mib 1
+timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-fp16-hf-x64,hmx-int4-ub-wn2x-full-x64 --min-ms 300 --size-mib 1
 ./cdsp_peak/build/host/cdsp_peak --scenario all --power none
 ./cdsp_peak/build/host/cdsp_peak --reset
 ```
@@ -187,6 +194,18 @@ run correctly but score lower than the `acc:2x2` path, roughly 13 TOPS and
 advertised 45 TOPS-class figure is not explained by simply switching the int8
 probe to activation-deep or weight-deep form.
 
+Two additional default probes exercise newer HMX forms. `hmx-fp16-hf-x64`
+follows the llama.cpp FP16 tile sequence: load HMX bias/scale registers with
+scale 1.0, clear the FP16 accumulator, issue 64 pairs of
+`activation.hf=mxmem(...)`/`weight.hf=mxmem(...)`, then store
+`mxmem(...):after.hf=acc`. On the tested v73 target this reports about
+7.1k ops/cycle and 9.9 TFLOPS. `hmx-int4-ub-wn2x-full-x64` uses the v73
+`weight.n=mxmem(...):2x` form with `activation.ub`; it currently counts one
+issue as a `32 x 128 x 32 x 2` integer shape. On the same v73 target that gives
+about 40.0k ops/cycle and 55.9 TOPS. Treat that row as an instruction probe:
+the local V81 PRM document covers FP16 HMX in detail but does not document this
+`weight.n:2x` tile-shape mapping.
+
 The currently generated HMX instruction packets can be inspected with:
 
 ```sh
@@ -200,4 +219,6 @@ For v73 output use `INSPECT_ARCH=v73`; the 2x2 path should disassemble to
 `mxmem(...):before:retain:sat.uh = acc:2x2` and
 `mxmem(...):after:sat.uh = acc:2x2` stores.
 The PRM-aligned experiments should show `activation.ub = mxmem(...):deep` and
-`weight.b = mxmem(...):deep` packets.
+`weight.b = mxmem(...):deep` packets. The FP16 and int4 probes should show
+`activation.hf = mxmem(...)`/`weight.hf = mxmem(...)` packets and
+`weight.n = mxmem(...):2x`, respectively.
