@@ -32,11 +32,16 @@
 #define HMX_INT8_UB_FULL_X16 12
 #define HMX_INT8_UB_FULL_X32 13
 #define HMX_INT8_UB_FULL_X64 14
+#define HMX_INT8_UH2X2_FULL_X64 15
+#define HMX_INT8_UB_ADEEP32 16
+#define HMX_INT8_UB_WDEEP_FULL_X64 17
 #define HMX_PROBE_RESOURCE 100
 #define HMX_PROBE_CACHED 101
 #define HMX_PROBE_LOCK 102
 #define HMX_TILE_U8_BYTES 1024
+#define HMX_DEEP_TILES 32
 #define HMX_OUTPUT_BYTES 2048
+#define HMX_OUTPUT_2X2_BYTES 8192
 
 #define POWER_NONE 0
 #define POWER_MAX 1
@@ -103,7 +108,11 @@ struct hmx_scenario {
    const char *unit;
    double ops_per_repeat;
    int start_repeats;
+   size_t activation_bytes;
+   size_t weight_bytes;
    size_t output_bytes;
+   int default_enabled;
+   int default_min_arch;
 };
 
 static const struct compute_scenario compute_scenarios[] = {
@@ -128,25 +137,43 @@ static const struct mem_scenario mem_scenarios[] = {
 };
 
 static const struct hmx_scenario hmx_scenarios[] = {
-   {"hmx-resource", HMX_PROBE_RESOURCE, "probe", 0.0, 1, 16},
-   {"hmx-cached", HMX_PROBE_CACHED, "probe", 0.0, 1, 16},
-   {"hmx-lock", HMX_PROBE_LOCK, "probe", 0.0, 1, 16},
+   {"hmx-resource", HMX_PROBE_RESOURCE, "probe", 0.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 16, 1, 0},
+   {"hmx-cached", HMX_PROBE_CACHED, "probe", 0.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 16, 1, 0},
+   {"hmx-lock", HMX_PROBE_LOCK, "probe", 0.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 16, 1, 0},
    {"hmx-int8-ub", HMX_INT8_UB, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0, 1,
-    HMX_TILE_U8_BYTES},
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 1, 0},
    {"hmx-int8-cm-ub", HMX_INT8_CM_UB, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0,
-    1, HMX_TILE_U8_BYTES},
+    1, HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 1, 0},
    {"hmx-int8-uh", HMX_INT8_UH, "GIOPS", 32.0 * 32.0 * 32.0 * 2.0, 1,
-    HMX_OUTPUT_BYTES},
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
    {"hmx-int8-ub-x16", HMX_INT8_UB_X16, "GIOPS",
-    16.0 * 32.0 * 32.0 * 32.0 * 2.0, 1, HMX_TILE_U8_BYTES},
+    16.0 * 32.0 * 32.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 1, 0},
    {"hmx-int8-uh-x16", HMX_INT8_UH_X16, "GIOPS",
-    16.0 * 32.0 * 32.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+    16.0 * 32.0 * 32.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
    {"hmx-int8-ub-full-x16", HMX_INT8_UB_FULL_X16, "GIOPS",
-    16.0 * 32.0 * 64.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+    16.0 * 32.0 * 64.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
    {"hmx-int8-ub-full-x32", HMX_INT8_UB_FULL_X32, "GIOPS",
-    32.0 * 32.0 * 64.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+    32.0 * 32.0 * 64.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
    {"hmx-int8-ub-full-x64", HMX_INT8_UB_FULL_X64, "GIOPS",
-    64.0 * 32.0 * 64.0 * 32.0 * 2.0, 1, HMX_OUTPUT_BYTES},
+    64.0 * 32.0 * 64.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
+   {"hmx-int8-uh2x2-full-x64", HMX_INT8_UH2X2_FULL_X64, "GIOPS",
+    64.0 * 32.0 * 128.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, HMX_OUTPUT_2X2_BYTES, 1, 69},
+   {"hmx-int8-ub-adeep32", HMX_INT8_UB_ADEEP32, "GIOPS",
+    (double)HMX_DEEP_TILES * 32.0 * 32.0 * 32.0 * 2.0, 1,
+    HMX_DEEP_TILES * HMX_TILE_U8_BYTES,
+    HMX_DEEP_TILES * HMX_TILE_U8_BYTES, HMX_TILE_U8_BYTES, 1, 0},
+   {"hmx-int8-ub-wdeep-full-x64", HMX_INT8_UB_WDEEP_FULL_X64, "GIOPS",
+    64.0 * 32.0 * 64.0 * 32.0 * 2.0, 1,
+    HMX_TILE_U8_BYTES, 2 * HMX_TILE_U8_BYTES, HMX_OUTPUT_BYTES, 1, 0},
 };
 
 static double now_ms(void)
@@ -428,7 +455,8 @@ static void usage(const char *prog)
           "           hmx-lock, hmx-int8-ub, hmx-int8-cm-ub, hmx-int8-uh,\n"
           "           hmx-int8-ub-x16, hmx-int8-uh-x16,"
           " hmx-int8-ub-full-x16, hmx-int8-ub-full-x32,"
-          " hmx-int8-ub-full-x64\n"
+          " hmx-int8-ub-full-x64, hmx-int8-uh2x2-full-x64,\n"
+          "           hmx-int8-ub-adeep32, hmx-int8-ub-wdeep-full-x64\n"
           "Default thread count is HVX_SUPPORT_128B, falling back to 1.\n"
           "Default power mode is max: compute client, DCVS max, HVX on, HMX on.\n",
           prog);
@@ -554,6 +582,19 @@ static bool scenario_enabled(const struct options *opt, const char *name)
    }
 
    return false;
+}
+
+static bool hmx_scenario_enabled(const struct options *opt,
+                                 const struct hmx_scenario *scenario,
+                                 int arch)
+{
+   if (!strcmp(opt->scenario_filter, "all")) {
+      if (!scenario->default_enabled)
+         return false;
+      return arch <= 0 || arch >= scenario->default_min_arch;
+   }
+
+   return scenario_enabled(opt, scenario->name);
 }
 
 static void print_header(void)
@@ -868,11 +909,12 @@ static int run_compute_group(const remote_handle64 *handles,
 }
 
 static void fill_hmx_inputs(uint8_t *activation, uint8_t *weight,
-                            uint8_t *output)
+                            uint8_t *output, size_t activation_bytes,
+                            size_t weight_bytes, size_t output_bytes)
 {
-   memset(activation, 1, HMX_TILE_U8_BYTES);
-   memset(weight, 1, HMX_TILE_U8_BYTES);
-   memset(output, 0, HMX_OUTPUT_BYTES);
+   memset(activation, 1, activation_bytes);
+   memset(weight, 1, weight_bytes);
+   memset(output, 0, output_bytes);
 }
 
 static int run_hmx_int8(remote_handle64 handle, const struct options *opt,
@@ -885,12 +927,14 @@ static int run_hmx_int8(remote_handle64 handle, const struct options *opt,
    struct bench_result result = {0};
 
    for (;;) {
-      fill_hmx_inputs(activation, weight, output);
+      fill_hmx_inputs(activation, weight, output, scenario->activation_bytes,
+                      scenario->weight_bytes, scenario->output_bytes);
 
       double start = now_ms();
-      err = cdsp_peak_bench_hmx_int8(handle, activation, HMX_TILE_U8_BYTES,
-                                     weight, HMX_TILE_U8_BYTES,
-                                     output, HMX_OUTPUT_BYTES,
+      err = cdsp_peak_bench_hmx_int8(handle, activation,
+                                     (int)scenario->activation_bytes,
+                                     weight, (int)scenario->weight_bytes,
+                                     output, (int)scenario->output_bytes,
                                      scenario->mode, repeats,
                                      &result.cycles, &result.checksum);
       result.elapsed_ms = now_ms() - start;
@@ -1080,11 +1124,54 @@ static bool any_mem_scenario_enabled(const struct options *opt)
 static bool any_hmx_scenario_enabled(const struct options *opt)
 {
    for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
-      if (scenario_enabled(opt, hmx_scenarios[i].name))
+      if (hmx_scenario_enabled(opt, &hmx_scenarios[i], 0))
          return true;
    }
 
    return false;
+}
+
+static size_t max_enabled_hmx_output_bytes(const struct options *opt, int arch)
+{
+   size_t bytes = 0;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
+      if (!hmx_scenario_enabled(opt, &hmx_scenarios[i], arch))
+         continue;
+      if (hmx_scenarios[i].output_bytes > bytes)
+         bytes = hmx_scenarios[i].output_bytes;
+   }
+
+   return bytes;
+}
+
+static size_t max_enabled_hmx_activation_bytes(const struct options *opt,
+                                               int arch)
+{
+   size_t bytes = 0;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
+      if (!hmx_scenario_enabled(opt, &hmx_scenarios[i], arch))
+         continue;
+      if (hmx_scenarios[i].activation_bytes > bytes)
+         bytes = hmx_scenarios[i].activation_bytes;
+   }
+
+   return bytes;
+}
+
+static size_t max_enabled_hmx_weight_bytes(const struct options *opt, int arch)
+{
+   size_t bytes = 0;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
+      if (!hmx_scenario_enabled(opt, &hmx_scenarios[i], arch))
+         continue;
+      if (hmx_scenarios[i].weight_bytes > bytes)
+         bytes = hmx_scenarios[i].weight_bytes;
+   }
+
+   return bytes;
 }
 
 int main(int argc, char **argv)
@@ -1248,18 +1335,22 @@ int main(int argc, char **argv)
    }
 
    for (unsigned i = 0; i < ARRAY_SIZE(hmx_scenarios); ++i) {
-      if (!scenario_enabled(&opt, hmx_scenarios[i].name))
+      if (!hmx_scenario_enabled(&opt, &hmx_scenarios[i], arch))
          continue;
       if (!hmx_activation) {
+         size_t hmx_activation_bytes =
+            max_enabled_hmx_activation_bytes(&opt, arch);
+         size_t hmx_weight_bytes = max_enabled_hmx_weight_bytes(&opt, arch);
+         size_t hmx_output_bytes = max_enabled_hmx_output_bytes(&opt, arch);
          hmx_activation = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
                                                   RPCMEM_DEFAULT_FLAGS,
-                                                  HMX_TILE_U8_BYTES);
+                                                  hmx_activation_bytes);
          hmx_weight = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
                                               RPCMEM_DEFAULT_FLAGS,
-                                              HMX_TILE_U8_BYTES);
+                                              hmx_weight_bytes);
          hmx_output = (uint8_t *)rpcmem_alloc(RPCMEM_HEAP_ID_SYSTEM,
                                               RPCMEM_DEFAULT_FLAGS,
-                                              HMX_OUTPUT_BYTES);
+                                              hmx_output_bytes);
          if (!hmx_activation || !hmx_weight || !hmx_output) {
             fprintf(stderr, "rpcmem_alloc failed for HMX probe buffers\n");
             err = -ENOMEM;

@@ -20,6 +20,12 @@ It measures a narrow first set of synthetic limits:
 - `hmx-int8-ub`, `hmx-int8-cm-ub`, `hmx-int8-uh`, and the `hmx-int8-*-x*`
   burst variants: experimental v68 HMX int8 tile instruction probes, included
   in the default `all` scenario.
+- `hmx-int8-uh2x2-full-x64`: experimental v69+ HMX int8 probe that stores the
+  wider `acc:2x2` unsigned-half accumulator shape. It is included in `all`
+  only when the detected DSP architecture is v69 or newer.
+- `hmx-int8-ub-adeep32`, `hmx-int8-ub-wdeep-full-x64`: experimental probes for
+  PRM-style activation deep and weight deep HMX multiply variants, included in
+  the default `all` scenario.
 
 ## Requirements
 
@@ -92,6 +98,8 @@ Useful options:
 ./cdsp_peak/build/host/cdsp_peak --scenario hmx-resource,hmx-cached,hmx-lock --iterations 1
 timeout 10s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-cm-ub --iterations 1
 timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-full-x64 --min-ms 300 --size-mib 1
+timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-uh2x2-full-x64 --min-ms 300 --size-mib 1
+timeout 60s ./cdsp_peak/build/host/cdsp_peak --scenario hmx-int8-ub-adeep32,hmx-int8-ub-wdeep-full-x64 --min-ms 300 --size-mib 1
 ./cdsp_peak/build/host/cdsp_peak --scenario all --power none
 ./cdsp_peak/build/host/cdsp_peak --reset
 ```
@@ -110,19 +118,20 @@ objects under `build/`. It does not remove `INSTALL_DIR`.
 
 The build emits both v68 and v73 DSP skel libraries. At startup, the host uses
 `DSPRPC_GET_DSP_INFO`/`ARCH_VER` to select `libcdsp_peak_skel_v68.so` or
-`libcdsp_peak_skel_v73.so`; the current benchmark scenarios remain v68-era
-probes and no v73-specific test rows are added yet. `mem-copy` reports touched
-bytes as read plus written bytes, so its GB/s number is twice the copied
-payload size. When `--threads` is omitted, `cdsp_peak` uses the FastRPC-reported
-`HVX_SUPPORT_128B` count as the default thread count. `--threads` opens one
-FastRPC handle per host thread and gives each memory thread its own
-`--size-mib` source and destination buffers. The `count` column is total calls
-for `rpc-null`, total iterations for compute scenarios, and total repeats for
-memory scenarios. Enabled int8 scenarios share one per-thread iteration count so
-their checksums are directly comparable. Use `--threads` inside one `cdsp_peak`
-process; running multiple benchmark processes against the same CDSP domain
-concurrently can leave FastRPC open calls blocked until the domain recovers or
-is reset externally.
+`libcdsp_peak_skel_v73.so`; HMX scenarios that need newer HMX encodings can
+declare a minimum default architecture, so `--scenario all` skips
+`hmx-int8-uh2x2-full-x64` on v68 while still allowing it to be requested
+explicitly. `mem-copy` reports touched bytes as read plus written bytes, so its
+GB/s number is twice the copied payload size. When `--threads` is omitted,
+`cdsp_peak` uses the FastRPC-reported `HVX_SUPPORT_128B` count as the default
+thread count. `--threads` opens one FastRPC handle per host thread and gives
+each memory thread its own `--size-mib` source and destination buffers. The
+`count` column is total calls for `rpc-null`, total iterations for compute
+scenarios, and total repeats for memory scenarios. Enabled int8 scenarios share
+one per-thread iteration count so their checksums are directly comparable. Use
+`--threads` inside one `cdsp_peak` process; running multiple benchmark
+processes against the same CDSP domain concurrently can leave FastRPC open calls
+blocked until the domain recovers or is reset externally.
 
 The banner prints FastRPC-reported capability fields such as VTCM page/count and
 HMX depth/spatial support. These are advisory capability values, not proof that
@@ -153,11 +162,30 @@ The `hmx-int8-ub-full-x16`, `hmx-int8-ub-full-x32`, and
 store both `before` and `after` `sat.ub` halves with `before:retain` plus
 `after`. They use the FastRPC-reported v68 `hmx_depth=32` and
 `hmx_spatial=64` shape, so each activation/weight packet is counted as
-`32 x 64 x 32 x 2` int8 ops. On the current target, `hmx-int8-ub-full-x64`
-reaches about 8.0k ops/cycle and 11.5 TOPS with the default `--power max`
-votes, which is close to the 8192 ops/cycle ideal for a single v68 HMX issue
-stream. The remaining gap to a 12 TOPS marketing number is consistent with the
-observed runtime clock rather than an obviously missing packet pattern.
+`32 x 64 x 32 x 2` int8 ops. On the current v68 target,
+`hmx-int8-ub-full-x64` reaches about 8.0k ops/cycle and 11.5 TOPS with the
+default `--power max` votes, which is close to the 8192 ops/cycle ideal for a
+single v68 HMX issue stream. The remaining gap to a 12 TOPS marketing number is
+consistent with the observed runtime clock rather than an obviously missing
+packet pattern.
+
+On v69+ HMX headers expose `acc:2x2` unsigned-half accumulator stores. The
+`hmx-int8-uh2x2-full-x64` row uses the same 64 activation/weight issue stream as
+`hmx-int8-ub-full-x64`, but stores the wider `before` and `after`
+`sat.uh=acc:2x2` result. It counts this as a `32 x 128 x 32 x 2` int8 shape per
+activation/weight packet. On a tested v73 target this row reports roughly 50
+TOPS with default power votes, which is near the advertised 45 TOPS class, but
+the row should still be treated as an instruction probe until the exact public
+HMX tile-shape documentation is available.
+
+The `hmx-int8-ub-adeep32` and `hmx-int8-ub-wdeep-full-x64` rows exercise
+PRM-style multiply variants:
+`activation.ub=mxmem(...):deep` for 32 contiguous int8 croutons, and
+`weight.b=mxmem(...):deep` for 64 filters. On the same tested v73 target they
+run correctly but score lower than the `acc:2x2` path, roughly 13 TOPS and
+22 TOPS respectively with the current synthetic layout. This suggests that the
+advertised 45 TOPS-class figure is not explained by simply switching the int8
+probe to activation-deep or weight-deep form.
 
 The currently generated HMX instruction packets can be inspected with:
 
@@ -167,3 +195,9 @@ make -C cdsp_peak inspect INSPECT_ARCH=v68
   -d --mcpu=hexagonv68 --mattr=+hmx,+hmxv68 \
   cdsp_peak/build/dsp/v68/cdsp_peak_hmx.o
 ```
+
+For v73 output use `INSPECT_ARCH=v73`; the 2x2 path should disassemble to
+`mxmem(...):before:retain:sat.uh = acc:2x2` and
+`mxmem(...):after:sat.uh = acc:2x2` stores.
+The PRM-aligned experiments should show `activation.ub = mxmem(...):deep` and
+`weight.b = mxmem(...):deep` packets.
